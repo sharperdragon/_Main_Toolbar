@@ -4,3 +4,9 @@ __pycache__/
 .DS_Store
 
 */__pycache__
+logs
+__pycache__
+OLD
+modules/logs
+Icon
+*/Icon

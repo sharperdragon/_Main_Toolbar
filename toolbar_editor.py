@@ -4,9 +4,6 @@
 # - Right-click → Inspect opens DevTools focused at cursor
 
 from __future__ import annotations
-
-# pyright: reportMissingImports=false
-# mypy: disable_error_code=import
 import os, json, traceback
 from typing import Any, Dict
 

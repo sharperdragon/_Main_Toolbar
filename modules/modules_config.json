@@ -1,0 +1,18 @@
+{
+"global_config": {
+    "log_dir": "~/Desktop/anki logs",
+    "ts_format": "%H-%M_%m-%d"
+},
+  "tag_renaming": {
+    "dry_run_default": true,
+    "allow_regex": true,
+    "pairs_csv": "tag_renaming/tag_renaming.csv",
+    "pairs_json": "tag_renaming/new_tag_rules.json",
+
+    "batch_commit_size": 1000,
+    "max_expansions_per_rule": 500,
+
+    "debug_regex": true,
+    "regex_debug_examples": 25
+  }
+}

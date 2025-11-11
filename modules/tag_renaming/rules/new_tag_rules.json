@@ -1,0 +1,70 @@
+[
+  {
+    "file-defaults": { "flags": "mi", "fields": ["Tags"] }
+  },
+{
+    "pattern":[
+        "#AK_(Step1_v12)",
+        "#AK_(Step3_v12)"
+    ],
+    "replacement": "#Zank::$1"
+},
+{
+    "pattern":"#AK_(Step2_v12)",
+    "replacement": "#Zank::#$1"
+},
+{
+    "pattern":"#(PANCE)",
+    "replacement": "#Zank::$1"
+},
+{
+    "pattern":[
+        "AnkiHub(_Optional)"
+    ],
+    "replacement": "#Zank::AH_$1"
+},
+{
+    "pattern":[
+        "^(.*::)!(FLAG_THESE_CARDS)"
+    ],
+    "replacement": "$1z$2" 
+},
+{
+    "pattern":[
+        "^(.*::)!(Shelf)"
+    ],
+    "replacement": "$1$2"
+},
+{
+    "pattern":[
+        "^(.*::)(#OME)_banner::(Basic_Science)"
+    ],
+    "replacement": "$1$2::*$3" 
+},
+{
+    "pattern":[
+        "^(.*::)(#OME)_banner::(Clinical)"
+    ],
+    "replacement": "$1$2::*$3" 
+},
+{
+    "pattern":[
+        "#AK_Other::!AK_UpdateTags::(Table)$",
+        "#AK_Other::!AK_UpdateTags::(AnKing_Image)$",
+        "#AK_Other::Card_Features::(Histology)$",
+        "#AK_Other::Card_Features::(Clinical_Sign)",
+        "#AK_Other::Card_Features::(Algorithm)",
+        "#AK_Other::Card_Features::(Mnemonic)",
+        "#AK_Other::Card_Features::(\\^Formula)",
+        "#AK_Other::Card_Features::(Mnemonic)",
+        "#AK_Other::Card_Features::(Rapid_Diagnosis)"
+    ],
+    "replacement": "#Zank::#Useful::$1"
+},
+{
+    "pattern":[
+        "#AK_(Other::New_Cards)"
+    ],
+    "replacement": "#Zank::$1"
+}
+]

@@ -8,6 +8,14 @@
     "enabled": true
   },
   {
+    "name": "Export Missing Media",
+    "module": "_Main_Toolbar.modules.get_missing_media",
+    "function": "write_missing_file",
+    "submenu": "Media",
+    "icon": "icons/picture.svg",
+    "enabled": true
+  },
+  {
     "name": "Get Unused",
     "module": "_Main_Toolbar.modules.get_unused_media",
     "function": "export_unused_media_to_txt",
@@ -16,11 +24,11 @@
     "enabled": true
   },
   {
-    "name": "Export Missing Media",
-    "module": "_Main_Toolbar.modules.get_missing_media",
-    "function": "write_missing_file",
-    "submenu": "Media",
-    "icon": "icons/picture.svg",
+    "name": "Tag Renamer",
+    "module": "_Main_Toolbar.modules.tag_renaming",
+    "function": "run_tag_renamer",
+    "submenu": "Collection",
+    "icon": "icons/gallery.svg",
     "enabled": true
   }
 ]
