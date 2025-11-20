@@ -1,0 +1,17 @@
+[
+{
+    "query": "",
+    "exclude_query": [
+    ""
+    ],
+    "pattern":"",
+    "replacement": "",
+    "regex": true,
+    "loop": false,
+    "fields": [
+    "Text", "Extra", "Extra2", "Extra3", "Extra4", "Extra5",
+    "Extra6", "Extra7", "Front", "Back", "Display", "Button"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+}
+]

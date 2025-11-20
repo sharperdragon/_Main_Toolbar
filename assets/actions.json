@@ -30,5 +30,13 @@
     "submenu": "Collection",
     "icon": "icons/gallery.svg",
     "enabled": true
+  },
+  {
+    "name": "Batch Find & Replace",
+    "module": "_Main_Toolbar.modules.batch_FR",
+    "function": "run_from_toolbar",
+    "submenu": "Collection",
+    "icon": "icons/gallery.svg",
+    "enabled": true
   }
 ]

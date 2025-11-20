@@ -1,0 +1,55 @@
+{
+  "query": {
+    "type": "array",
+    "items": { "type": "string" },
+    "description": "Anki Browser search to select notes. Supports deck:, note:, tag:, re:, etc. Empty = all notes.",
+    "default": ""
+  },
+  "exclude_query": {
+    "type": "array",
+    "items": { "type": "string" },
+    "description": "Negative filters appended to the search; each entry becomes -(\"term\").",
+    "default": []
+  },
+  "pattern": {
+    "type": ["string", "array"],
+    "items": { "type": "string" },
+    "description": "Text or regular expression to find. May be a single string or a list of patterns that all use the same replacement/flags/fields.",
+    "default": ""
+  },
+  "replacement": {
+    "type": "string",
+    "description": "Replacement text. When regex=true, supports $1, $2, … (Python replacement syntax also supports \\g<1>).",
+    "default": ""
+  },
+  "regex": {
+    "type": "boolean",
+    "description": "Interpret pattern as a Python regular expression. If false, treat pattern as literal text.",
+    "default": true
+  },
+  "flags": {
+    "type": "string",
+    "description": "Regex flags. Combine any of: i (ignore case), m (multiline), s (dotall), x (verbose). Empty = use Defaults/config.",
+    "default": ""
+  },
+  "loop": {
+    "type": "boolean",
+    "description": "If true, repeatedly apply this rule to the same text until no further changes occur (safety cap applies). If false, run once.",
+    "default": false
+  },
+  "fields": {
+    "type": "array",
+    "items": { "type": "string" },
+    "description": "Note fields to modify. [\"ALL\"] means use config.fields_all (or all fields if not set). Empty = use Defaults/fields_all.",
+    "default": []
+  },
+  "delete_chars": {
+    "type": ["object", "integer"],
+    "description": "Deletion guard. Object form supports {max_chars, count_spaces}. Integer form is legacy = max_chars.",
+    "properties": {
+      "max_chars": { "type": "integer", "default": 0 },
+      "count_spaces": { "type": "boolean", "default": true }
+    },
+    "default": { "max_chars": 0, "count_spaces": true }
+  }
+}

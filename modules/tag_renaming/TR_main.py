@@ -23,6 +23,7 @@ from .tag_rename_utils import (
     has_left_path_capture, inject_left_path_capture, bump_replacement_groups,
 )
 
+
 DRY_RUN: bool = True
 
 # $ Inputs (module-relative; no user/home hardcoding)
@@ -227,10 +228,6 @@ def _run_global_tag_renamer(parent, dry_run: bool | None = None) -> None:
     ).failure(lambda e: QMessageBox.critical(parent, "Global Tag Renamer — Error", str(e))).run_in_background()
 
 
-
-# =========================
-# Preflight
-# =========================
 
 
 def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:

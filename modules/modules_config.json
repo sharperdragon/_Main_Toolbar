@@ -1,17 +1,60 @@
 {
-"global_config": {
+  "global_config": {
     "log_dir": "~/Desktop/anki logs",
     "ts_format": "%H-%M_%m-%d"
-},
+  },
+  "batch_FR_config": {
+    "rules_path": "batch_FR/rules",
+    "remove_rules_name": "remove.txt",
+    "field_remove_rules_name": "remove_fields.txt",
+    "fields_all": [
+      "Text",
+      "Extra",
+      "Extra2",
+      "Extra3",
+      "Extra4",
+      "Extra5",
+      "Extra6",
+      "Extra7",
+      "Front",
+      "Back",
+      "Display",
+      "Button"
+    ],
+    "log_mode": "diff",
+    "include_unchanged": false,
+    "Defaults": {
+      "exclude_query": "",
+      "regex": true,
+      "flags": "m",
+      "loop": false,
+      "fields": ["ALL"],
+      "delete_chars": { "max_chars": 0, "count_spaces": true }
+    },
+    "remove_config": {
+      "regex": true,
+      "flags": "ms",
+      "loop": true
+    },
+    "max_loops": 30,
+    "order_preference": {
+      "testing_rules.json": 1,
+      "remove_rules.txt": 2,
+      "base_rules.json": 3
+    },
+    "batch_fr_debug": {
+      "enabled": true,
+      "max_examples_per_rule": 3,
+      "max_rules": 200
+    }
+  },
   "tag_renaming": {
     "dry_run_default": true,
     "allow_regex": true,
     "pairs_csv": "tag_renaming/tag_renaming.csv",
     "pairs_json": "tag_renaming/new_tag_rules.json",
-
     "batch_commit_size": 1000,
     "max_expansions_per_rule": 500,
-
     "debug_regex": true,
     "regex_debug_examples": 25
   }
