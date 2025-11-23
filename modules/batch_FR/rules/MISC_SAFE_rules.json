@@ -1,0 +1,9 @@
+[
+{
+  "query": "re:(\\}\\}) and (\\{\\{c\\d)",
+  "pattern": "(\\}\\}) and (\\{\\{c\\d)",
+  "replacement": "$1 & $2",
+  "regex": true,
+  "loop": true
+}
+]

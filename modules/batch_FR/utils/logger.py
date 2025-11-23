@@ -247,12 +247,13 @@ def write_batch_fr_debug(
         if not per_rules:
             lines.append("_No rules were executed._")
         else:
+            # Table 1: core numeric stats
             lines.append("")
             if dry:
-                lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | error | pattern | replacement |")
+                lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs |")
             else:
-                lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs | error | pattern | replacement |")
-            lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|---|---|---|")
+                lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs |")
+            lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|")
             for per in per_rules:
                 idx = per.get("index", "?")
                 fields = per.get("fields", [])
@@ -265,17 +266,31 @@ def write_batch_fr_debug(
                 subs = per.get("total_subs", 0)
                 guard_skips = per.get("guard_skips", 0)
                 rm_field_subs = per.get("remove_field_subs", 0)
-                err = str(per.get("error", "") or "")
-                pat = per.get("pattern", "")
-                rep = per.get("replacement", "")
                 if dry:
                     lines.append(
-                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {would_change} | {subs} | {guard_skips} | {rm_field_subs} | `{err}` | `{pat}` | `{rep}` |"
+                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {would_change} | {subs} | {guard_skips} | {rm_field_subs} |"
                     )
                 else:
                     lines.append(
-                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {changed} | {subs} | {guard_skips} | {rm_field_subs} | `{err}` | `{pat}` | `{rep}` |"
+                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {changed} | {subs} | {guard_skips} | {rm_field_subs} |"
                     )
+
+            # Table 2: error / pattern / replacement
+            lines.append("")
+            lines.append("| # | error | pattern | replacement |")
+            lines.append("|---:|---|---|---|")
+            for per in per_rules:
+                idx = per.get("index", "?")
+                err = str(per.get("error", "") or "")
+                pat = per.get("pattern", "")
+                rep = per.get("replacement", "")
+                # Escape pipes so the Markdown table doesn't break
+                err_disp = err.replace("|", "\\|")
+                pat_disp = str(pat).replace("|", "\\|")
+                rep_disp = str(rep).replace("|", "\\|")
+                lines.append(
+                    f"| {idx} | `{err_disp}` | `{pat_disp}` | `{rep_disp}` |"
+                )
         lines.append("")
 
         # Per-rule examples
@@ -319,12 +334,10 @@ def write_batch_fr_debug(
             lines.append("")
             lines.append("_No examples were recorded for this run._")
 
-        # Write file
         out_text = "\n".join(lines) + "\n"
         out_path.write_text(out_text, encoding="utf-8")
         return out_path
 
     except Exception as e:  # pragma: no cover
-        # Best-effort debug writer; never break the main flow.
         print(f"[batch_FR] Failed to write debug markdown: {e}", file=sys.stderr)
         return None

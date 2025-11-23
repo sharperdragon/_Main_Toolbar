@@ -59,6 +59,8 @@ class RegexRuleDebug:
     orig_pattern: Optional[str] = None
     orig_replacement: Optional[str] = None
     normalized: bool = False
+    # Optional: tags that look related to the pattern when matched_count == 0
+    near_matches: Optional[List[str]] = None
 
 @dataclass
 class ExecResult:

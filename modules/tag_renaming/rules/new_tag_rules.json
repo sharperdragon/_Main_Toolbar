@@ -4,6 +4,12 @@
   },
 {
     "pattern":[
+        "(#AK_Other)::#AK_Other"
+    ],
+    "replacement": "$1"
+},
+{
+    "pattern":[
         "#AK_(Step1_v12)",
         "#AK_(Step3_v12)"
     ],
@@ -21,7 +27,7 @@
     "pattern":[
         "AnkiHub(_Optional)"
     ],
-    "replacement": "#Zank::AH_$1"
+    "replacement": "#Zank::AH$1"
 },
 {
     "pattern":[
@@ -51,11 +57,10 @@
     "pattern":[
         "#AK_Other::!AK_UpdateTags::(Table)$",
         "#AK_Other::!AK_UpdateTags::(AnKing_Image)$",
+        "#AK_Other::!AK_UpdateTags::(Algorithm)$",
         "#AK_Other::Card_Features::(Histology)$",
         "#AK_Other::Card_Features::(Clinical_Sign)",
         "#AK_Other::Card_Features::(Algorithm)",
-        "#AK_Other::Card_Features::(Mnemonic)",
-        "#AK_Other::Card_Features::(\\^Formula)",
         "#AK_Other::Card_Features::(Mnemonic)",
         "#AK_Other::Card_Features::(Rapid_Diagnosis)"
     ],
@@ -64,6 +69,18 @@
 {
     "pattern":[
         "#AK_(Other::New_Cards)"
+    ],
+    "replacement": "#Zank::$1"
+},
+{
+    "pattern":[
+        "!AK_(UpdateTags)"
+    ],
+    "replacement": "#Zank::Other::$1"
+},
+{
+    "pattern":[
+        "#AK_(Other)"
     ],
     "replacement": "#Zank::$1"
 }

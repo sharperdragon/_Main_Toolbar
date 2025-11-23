@@ -20,7 +20,7 @@ from .tag_rename_utils import (
     _compute_prefixes, _first_segment, _looks_literal_segment, _sanitize_parent_only,
     _rename_tag_token,
     # ? NEW: left-path helpers
-    has_left_path_capture, inject_left_path_capture, bump_replacement_groups,
+    has_left_path_capture, inject_left_path_capture,
 )
 
 
@@ -265,16 +265,14 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
         for p in resolved:
             if not (p.src == "json" and p.kind == "regex"):
                 continue
-
             patt, repl, _ = _sanitize_parent_only(p.old, p.new)
-
             # * Normalize for full-path matching:
-            #   - If rule does NOT already capture the left path, inject ^((?:.*::)?)
-            #     and bump all $n → $(n+1) in the replacement so $1 becomes the left path.
+            #     optional prefix ^(?:.*::)? so user capture group indices stay stable.
             orig_patt, orig_repl = patt, repl  # for debug visibility
             if not has_left_path_capture(patt):
                 patt = inject_left_path_capture(patt)
-                repl = bump_replacement_groups(repl, 1)
+                # NOTE: inject_left_path_capture is non-capturing by default, so we
+                # deliberately do NOT bump $n group references in the replacement.
 
             try:
                 rgx = re.compile(patt)  # case-sensitive
@@ -342,9 +340,21 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
     )
 
 
-# =========================
-# Execution
-# =========================
+def _build_tag_regex_query(tag: str) -> str:
+    """
+    Build a safe tag:re: query for Anki that matches either the exact tag
+    or any child under that parent tag. Escapes regex metacharacters and colons
+    so Anki's search parser does not treat ':' as a keyword separator.
+    """
+    base = re.escape(tag)
+    # Escape colons for Anki's search language (they are not escaped by re.escape)
+    base = base.replace(":", r"\:")
+    # Match exact tag or any child (prefix::child)
+    suffix = r"(\:\:|$)"
+    pattern = f"^{base}{suffix}"
+    return f"tag:re:{pattern}"
+
+
 def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
     applied: List[Tuple[str, str, int, str]] = []
     skipped: List[Tuple[str, str, str]] = []
@@ -355,8 +365,11 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
         for p in pairs:
             # Estimate impacted notes cheaply
             try:
-                count = len(col.find_notes(f'tag:re:^{re.escape(p.old)}(::|$)'))
-            except Exception:
+                query = _build_tag_regex_query(p.old)
+                count = len(col.find_notes(query))
+            except Exception as e:
+                # ! If count fails, keep going but log a warning
+                warnings.append(f'dry-run count failed for "{p.old}"→"{p.new}": {e!s}')
                 count = 0
             applied.append((p.old, p.new, count, "dry-run"))
         return Outcome(applied=applied, skipped=skipped, warnings=warnings, total_notes_changed=0)
@@ -367,23 +380,38 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
 
     for p in pairs:
         notes_changed = 0
-        try:
-            if has_fast():
+        fast_used = False
+
+        # * Fast path: use TagManager.rename if available
+        if has_fast():
+            try:
                 # Fast path: move subtree too, as Anki's TagManager.rename handles hierarchies.
                 # Some builds expose rename(old, new); if signature changes, fallback will handle it.
                 col.tags.rename(p.old, p.new)
-                # Optional: count after rename
-                notes_changed = len(col.find_notes(f'tag:re:^{re.escape(p.new)}(::|$)'))
-                applied.append((p.old, p.new, notes_changed, "fast"))
-                total_changed += notes_changed
-                continue
-        except Exception as e:
-            # Fall back silently; we'll try per-note chunked update below.
-            warnings.append(f'Fast path failed for "{p.old}"→"{p.new}": {e!s}')
+                fast_used = True
+            except Exception as e:
+                # ? Only the rename itself failed; log and fall back
+                warnings.append(f'Fast path rename failed for "{p.old}"→"{p.new}": {e!s}')
+
+        if fast_used:
+            # * Rename succeeded; best-effort count on the NEW tag.
+            #   If counting fails, we STILL treat this pair as applied.
+            try:
+                query = _build_tag_regex_query(p.new)
+                notes_changed = len(col.find_notes(query))
+            except Exception as e:
+                warnings.append(f'Fast path count failed for "{p.old}"→"{p.new}": {e!s}')
+                notes_changed = 0
+
+            applied.append((p.old, p.new, notes_changed, "fast"))
+            total_changed += notes_changed
+            # Skip fallback entirely; tags are already renamed
+            continue
 
         # Fallback: chunked per-note updates (still global scope)
         try:
-            nids = col.find_notes(f'tag:re:^{re.escape(p.old)}(::|$)')
+            query = _build_tag_regex_query(p.old)
+            nids = col.find_notes(query)
         except Exception as e:
             skipped.append((p.old, p.new, f"search failed: {e!s}"))
             continue
@@ -419,8 +447,6 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
         pass
 
     return Outcome(applied=applied, skipped=skipped, warnings=warnings, total_notes_changed=total_changed)
-
-
 
 # =========================
 # Reporting
@@ -500,7 +526,7 @@ def _write_report(out: Outcome, pf: Preflight, run_mode_dry: bool, allow_regex: 
         lines.append("| old | query | matched_notes |")
         lines.append("|---|---|---:|")
         for old, _new, cnt, _mode in out.applied:
-            query = f'tag:re:^{re.escape(old)}(::|$)'
+            query = _build_tag_regex_query(old)
             lines.append(f"| `{old}` | `{query}` | {cnt} |")
     if out.warnings:
         lines.append("")

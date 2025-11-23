@@ -1,0 +1,12 @@
+[
+{
+    "pattern":"(\\d)\\.(\\s+\\{\\{)",
+    "replacement": "$1)$2",
+    "regex": true,
+    "loop": false,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 1, "count_spaces": true}
+}
+]

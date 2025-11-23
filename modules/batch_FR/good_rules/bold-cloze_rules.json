@@ -4,27 +4,31 @@
         "pattern": "<b>(\\}\\}.*?)</b>",
         "replacement": "$1",
         "loop": true,
-        "fields": ["Text"]
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 0, "count_spaces": true}
     },    
     {
         "query": "re:<b>(\\w*\\s*\\{\\{[^\\}]+?\\}\\}\\s*-*\\w*)</b>",
         "pattern": "<b>(\\w*\\s*\\{\\{[^\\}]+?\\}\\}\\s*-*\\w*)</b>",
         "replacement": "$1",
         "loop": true,
-        "fields": ["Text"]
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 0, "count_spaces": true}
     },
     {
         "query": "re:(\\{\\{[^\\}]*?)<b>([^\\}]*?\\}\\})",
         "pattern": "(\\{\\{[^\\}]*?)<b>([^\\}]*?\\}\\})",
         "replacement": "$1$2",
         "loop": true,
-        "fields": ["Text"]
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 3, "count_spaces": true}
     },
     {
-        "query": "re:<b>([^\\}]+?)(\\s\\{\\{[^\\}]*?)([^\\}]*?\\}\\})</b>",
-        "pattern": "<b>([^\\}]+?)(\\s\\{\\{[^\\}]*?)([^\\}]*?\\}\\})</b>",
+        "query": "re:<b>([^\\}]+?)((\\s\\{\\{[^\\}]*?)([^\\}]*?\\}\\}))</b>",
+        "pattern": "<b>([^\\}]+?)((\\s\\{\\{[^\\}]*?)([^\\}]*?\\}\\}))</b>",
         "replacement": "<b>$1</b> $2",
         "loop": true,
-        "fields": ["Text"]
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 0, "count_spaces": true}
     }
 ]

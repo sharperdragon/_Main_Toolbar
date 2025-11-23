@@ -197,8 +197,8 @@ def run_batch_find_replace(
                         if len(per["examples"]) < 2:
                             per["examples"].append({
                                 "field": field,
-                                "before": safe_truncate(before, 240, count_spaces=True),
-                                "after": safe_truncate(after, 240, count_spaces=True),
+                                "before": safe_truncate(before, 500, count_spaces=True),
+                                "after": safe_truncate(after, 500, count_spaces=True),
                             })
                         # assign but defer update_note until after all fields processed
                         if not dry:
@@ -252,7 +252,7 @@ def _coerce_run_config(d: Dict[str, Any]) -> RunConfig:
 
 def _as_rule(r: Dict[str, Any]) -> Rule:
     return Rule(
-        query=r.get("query", "deck:*"),
+        query=r.get("query", ""),
         exclude_query=r.get("exclude_query"),
         pattern=r.get("pattern", ""),
         replacement=r.get("replacement", ""),
@@ -294,11 +294,13 @@ def _compose_search(rule: Rule) -> str:
         return f'"{s}"' if any(ch.isspace() for ch in s) else s
 
     parts: List[str] = []
-    q = rule.query
-    if isinstance(q, list):
-        parts.extend([_q(s) for s in q if str(s).strip()])
-    elif isinstance(q, str) and q.strip():
-        parts.append(_q(q))
+
+    # Use effective query (explicit query or derived from pattern)
+    eff_q = _effective_query(rule)
+    if isinstance(eff_q, list):
+        parts.extend([_q(s) for s in eff_q if str(s).strip()])
+    elif isinstance(eff_q, str) and eff_q.strip():
+        parts.append(_q(eff_q))
 
     ex = rule.exclude_query
     if isinstance(ex, list):
@@ -306,6 +308,7 @@ def _compose_search(rule: Rule) -> str:
     elif isinstance(ex, str) and ex.strip():
         parts.append(f'-({_q(ex)})')
 
+    # If we somehow still have nothing, fall back to deck:*
     return " ".join(parts) if parts else "deck:*"
 
 def _resolve_fields(note, fields_spec: List[str], fields_all: List[str]) -> List[str]:
@@ -321,6 +324,33 @@ def _pattern_of(rule: Rule) -> str:
     * If pattern is a list, choose a primary; engine may iterate lists later.
     """
     return rule.pattern[0] if isinstance(rule.pattern, list) else str(rule.pattern)
+
+# --- Insert: _effective_query helper
+def _effective_query(rule: Rule) -> Union[str, List[str], None]:
+    """
+    * Resolve the query that will actually be used:
+      - If the rule has an explicit query, return it (string or filtered list).
+      - Otherwise, derive a regex/literal clause from the rule pattern.
+    """
+    q = rule.query
+
+    # Normalize explicit query, if present
+    if isinstance(q, str):
+        qs = q.strip()
+        if qs:
+            return qs
+    elif isinstance(q, list):
+        cleaned = [str(s).strip() for s in q if str(s).strip()]
+        if cleaned:
+            return cleaned
+
+    # No explicit query → derive from pattern
+    pat = _pattern_of(rule).strip()
+    if not pat:
+        return None
+
+    clause = f"re:{pat}" if rule.regex else pat
+    return clause
 
 def _coerce_repl_for_python(raw: str, is_regex: bool) -> str:
     """
@@ -368,7 +398,7 @@ def _init_report(cfg: RunConfig) -> Dict[str, Any]:
 def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
     return {
         "index": idx,
-        "query": rule.query,
+        "query": _effective_query(rule),
         "exclude": rule.exclude_query,
         "pattern": rule.pattern if isinstance(rule.pattern, str) else rule.pattern[:1],
         "flags": rule.flags,
@@ -404,8 +434,6 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
     out_dir = ensure_dir(cfg.log_dir or ".")
     json_p = ensure_parent(out_dir / f"batch_fr_summary__{ts}.json")
     txt_p = ensure_parent(out_dir / f"batch_fr_details__{ts}.txt")
-
-    json_p.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Human-readable summary
     lines: List[str] = []
@@ -454,7 +482,13 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
             lines.append(f"  ex{i} [{e.get('field','?')}]: BEFORE: {e.get('before','')}")
             lines.append(f"  ex{i} [{e.get('field','?')}]: AFTER : {e.get('after','')}")
         lines.append("")
-    txt_p.write_text("\n".join(lines), encoding="utf-8")
+
+    # Embed the text summary into the JSON report and write both files
+    details_txt = "\n".join(lines)
+    report["details_txt"] = details_txt
+
+    json_p.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    txt_p.write_text(details_txt, encoding="utf-8")
 
     report.setdefault("report_paths", {})["json"] = str(json_p)
     report.setdefault("report_paths", {})["txt"] = str(txt_p)

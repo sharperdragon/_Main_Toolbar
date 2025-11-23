@@ -1,0 +1,17 @@
+[
+    {
+    "query": "re:<img[^>]*?\\s+alt=\\\"[^>]*?\\\"[^>]*?>",
+    "pattern": "(<img[^>]*?)\\s+alt=\\\"[^>]*?\\\"([^>]*?>)",
+    "replacement": "$1$2",
+    "regex": true
+    },
+    {
+    "query": "re:(<img[^>]*?) (?:(?:width)|(?:height))=\\\"[^>]*?\\\"([^>]*?>)",
+    "pattern": "(<img[^>]*?) (?:(?:width)|(?:height))=\\\"[^>]*?\\\"([^>]*?>)",
+    "replacement": "$1$2",
+      "delete_chars": {
+        "max_chars": 0,
+        "count_spaces": true
+        }
+    }
+]

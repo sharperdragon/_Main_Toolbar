@@ -298,7 +298,8 @@ def basic_html_cloze_balance_ok(before: str, after: str) -> bool:
     * Lightweight structural sanity check for HTML/cloze text.
     - Ensures cloze delimiters stay balanced and, when they were balanced
       before, that they remain balanced after.
-    - Ensures <b>...</b> tags remain balanced if they were balanced before.
+    - ! NOTE: <b>...</b> balance is no longer enforced here; rules are free
+      to add/remove bold tags as needed, as long as clozes remain valid.
     """
     if before == after:
         return True
@@ -307,8 +308,6 @@ def basic_html_cloze_balance_ok(before: str, after: str) -> bool:
         return {
             "open_cloze": s.count("{{"),
             "close_cloze": s.count("}}"),
-            "open_b": s.count("<b>"),
-            "close_b": s.count("</b>"),
         }
 
     cb = counts(before)
@@ -322,10 +321,6 @@ def basic_html_cloze_balance_ok(before: str, after: str) -> bool:
             or ca["close_cloze"] != cb["close_cloze"]
         ):
             return False
-
-    # If <b> tags were balanced before, require them to remain balanced.
-    if cb["open_b"] == cb["close_b"] and ca["open_b"] != ca["close_b"]:
-        return False
 
     return True
 

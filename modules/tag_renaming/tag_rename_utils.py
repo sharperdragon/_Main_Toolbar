@@ -215,9 +215,10 @@ def _sanitize_parent_only(pattern: str, replacement: str) -> tuple[str, str, boo
 # ? [19-41_11-10] Helpers for left-path wrapping and safe replacement bumping
 
 _LEFT_PATH_PREFIX_RX = re.compile(r"""
-    ^\s*\^?                # optional leading ^ and whitespace
+    ^\s*\^?                 # optional leading ^ and whitespace
     (?:                     # either form already present...
-       \(\(\?:\.\*::\)\?\) #   ^((?:.*::)?)
+       \(\(\?:\.\*::\)\?\)  #   ^((?:.*::)?)
+     | \(\?:\.\*::\)\?      #   ^(?:.*::)?
      | \(\.\*::\)           #   ^(.*::)
     )
 """, re.X)
@@ -225,18 +226,27 @@ _LEFT_PATH_PREFIX_RX = re.compile(r"""
 _DOLLAR_GROUP_RX = re.compile(r"(?<!\\)\$(\d+)")  # matches $n not preceded by a backslash
 
 def has_left_path_capture(pattern: str) -> bool:
-    """Return True if pattern already starts with an explicit left-path capture."""
+    """Return True if pattern already starts with an explicit left-path prefix matcher."""
     return bool(_LEFT_PATH_PREFIX_RX.match(pattern or ""))
 
-def inject_left_path_capture(pattern: str, prefix_pat: str = r"^((?:.*::)?)") -> str:
+def inject_left_path_capture(pattern: str, prefix_pat: str = r"^(?:.*::)?") -> str:
     """
-    Insert an optional left-path capture:
-      - If the pattern begins with optional whitespace and a '^', insert right after the first '^'
-      - Else, prepend at the very beginning
+    Insert an optional left-path prefix matcher.
+
+    We deliberately use a non-capturing group by default so that user-defined
+    capture group indices remain stable. Callers that truly need a capturing
+    prefix can supply one explicitly via `prefix_pat`.
+      - If the pattern begins with optional whitespace and a '^', insert right
+        after the first '^'
+      - Else, prepend at the very beginning.
     Never appends '$' here; fullmatch() is used by the caller.
     """
     if not pattern:
         return prefix_pat
+    # If a left-path prefix (capturing or non-capturing) is already present,
+    # leave the pattern unchanged.
+    if has_left_path_capture(pattern):
+        return pattern
     m = re.match(r"^\s*\^", pattern)
     if m:
         i = pattern.find("^")
