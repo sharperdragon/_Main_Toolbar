@@ -24,9 +24,9 @@
     "enabled": true
   },
   {
-    "name": "Tag Renaming",
-    "module": "_Main_Toolbar.modules.tag_renaming",
-    "function": "run_tag_renamer",
+    "name": "Update Tags",
+    "module": "_Main_Toolbar.modules.tag_updates",
+    "function": "run_tag_updates",
     "submenu": "Collection",
     "icon": "icons/gallery.svg",
     "enabled": true
@@ -35,6 +35,14 @@
     "name": "Batch Find & Replace",
     "module": "_Main_Toolbar.modules.batch_FR",
     "function": "run_from_toolbar",
+    "submenu": "Collection",
+    "icon": "icons/gallery.svg",
+    "enabled": true
+  },
+  {
+    "name": "ReColor Settings",
+    "module": "Recolor.menu",
+    "function": "open_recolor_config_from_toolbar",
     "submenu": "Collection",
     "icon": "icons/gallery.svg",
     "enabled": true

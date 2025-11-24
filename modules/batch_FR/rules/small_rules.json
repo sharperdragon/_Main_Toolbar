@@ -3,7 +3,7 @@
     "pattern":"(\\d)\\.(\\s+\\{\\{)",
     "replacement": "$1)$2",
     "regex": true,
-    "loop": false,
+    "loop": true,
     "fields": [
     "Text"
     ],

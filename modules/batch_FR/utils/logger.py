@@ -206,6 +206,16 @@ def write_batch_fr_debug(
         lines.append(f"- log_dir: `{log_dir}`")
         rules_path = getattr(cfg, "rules_path", "")
         lines.append(f"- rules_path: `{rules_path}`")
+        rules_files_used = report.get("rules_files_used")
+        if isinstance(rules_files_used, (list, tuple)) and rules_files_used:
+            lines.append(f"- rule_files_used ({len(rules_files_used)}):")
+            for rf in rules_files_used:
+                try:
+                    lines.append(f"  - `{str(rf)}`")
+                except Exception:
+                    lines.append(f"  - `{rf}`")
+        else:
+            lines.append("- rule_files_used: (all discovered under rules_path)")
         lines.append(f"- ts_format: `{ts_fmt}`")
         lines.append(f"- log_mode: `{getattr(cfg, 'log_mode', '')}`")
         lines.append(f"- include_unchanged: {getattr(cfg, 'include_unchanged', False)}")

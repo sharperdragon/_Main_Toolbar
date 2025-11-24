@@ -69,7 +69,7 @@ try:
     _cfgG = _cfg_global()
     _cfgT = _cfg_tag()
 
-    # log_dir: global_config wins; else fallback to tag_renaming if present
+    
     if isinstance(_cfgG.get("log_dir"), str):
         LOG_PATH = Path(os.path.expanduser(_cfgG["log_dir"]))
     elif isinstance(_cfgT.get("log_dir"), str):
@@ -113,6 +113,39 @@ except Exception:
 
 
 
+
+def load_all_pairs_for_ui() -> Tuple[List[Pair], List[str], List[Path], List[Path]]:
+    """
+    Load all CSV/JSON rename pairs and build human-readable labels for a rule picker UI.
+
+    Returns:
+        (pairs, labels, csv_files, json_files)
+    """
+    csv_files, json_files = _discover_rule_files(RULES_DIR)
+    csv_pairs: List[Pair] = []
+    json_pairs: List[Pair] = []
+
+    for f in csv_files:
+        csv_pairs += _load_pairs_from_csv(f)
+
+    for f in json_files:
+        json_pairs += _load_pairs_from_json(f)
+
+    # CSV-first, then JSON, same as _run_global_tag_renamer
+    raw_pairs = _normalize_pairs([*csv_pairs, *json_pairs])
+
+    labels: List[str] = []
+    for p in raw_pairs:
+        try:
+            label = f"{p.old} → {p.new}"
+        except Exception:
+            # Fallback if attributes are missing for some reason
+            label = repr(p)
+        labels.append(label)
+
+    return raw_pairs, labels, csv_files, json_files
+
+
 def _prompt_and_run(parent):
     """
     Ask the user to pick 'Dry Run' or 'Apply Changes' for this run only.
@@ -134,22 +167,62 @@ def _prompt_and_run(parent):
     _run_global_tag_renamer(parent=parent, dry_run=mode_dry_run)
 
 
+
 def _run_global_tag_renamer(parent, dry_run: bool | None = None) -> None:
-    """Reads pairs, preflights, confirms, then runs a CollectionOp."""
+    """
+    Compatibility wrapper used by the standalone Global Tag Renamer entrypoint.
+
+    - Resolves dry_run flag (falling back to the global default)
+    - Loads all rule pairs from CSV/JSON
+    - Delegates to _run_tag_renamer_core
+    """
     # Decide runtime mode (prefer user pick; fall back to global default)
     run_dry = DRY_RUN if (dry_run is None) else dry_run
-    # Load + normalize + chain-resolve
-    csv_files, json_files = _discover_rule_files(RULES_DIR)
-    csv_pairs: list[Pair] = []
-    json_pairs: list[Pair] = []
 
-    for f in csv_files:
-        csv_pairs += _load_pairs_from_csv(f)
+    raw_pairs, _labels, csv_files, json_files = load_all_pairs_for_ui()
 
-    for f in json_files:
-        json_pairs += _load_pairs_from_json(f)
+    _run_tag_renamer_core(
+        parent=parent,
+        raw_pairs=raw_pairs,
+        run_dry=run_dry,
+        csv_files=csv_files,
+        json_files=json_files,
+    )
 
-    raw_pairs = _normalize_pairs([*csv_pairs, *json_pairs])  # CSV first by construction
+
+def _run_tag_renamer_core(
+    parent,
+    raw_pairs: Sequence[Pair],
+    run_dry: bool,
+    csv_files: list[Path],
+    json_files: list[Path],
+    show_preflight_prompt: bool = True,
+    show_final_summary: bool = True,
+) -> None:
+    """
+    Core pipeline for the tag renamer.
+
+    This is shared by:
+      - _run_global_tag_renamer(..)  (standalone action)
+      - run_tag_renamer_subset(..)   (Tag Updates combined picker)
+
+    Args:
+        parent: Parent QWidget for dialogs.
+        raw_pairs: Sequence of Pair rename operations.
+        run_dry: If True, perform a dry run (no changes).
+        csv_files: List of CSV rule file paths used this run.
+        json_files: List of JSON rule file paths used this run.
+        show_preflight_prompt: If True, display the “Proceed with global rename?”
+            confirmation dialog before executing. Callers that already confirmed
+            with the user (like Tag Updates combined picker) can pass False to
+            avoid a second confirmation window.
+        show_final_summary: If True, display the final “Global Tag Renamer — Done”
+            summary popup. Callers like Tag Updates that want to provide their own
+            combined summary can pass False to suppress this extra window.
+    """
+    if parent is None:
+        parent = mw
+
     if not raw_pairs:
         QMessageBox.warning(parent, "Global Tag Renamer", f"No rule files found in: {RULES_DIR}")
         return
@@ -170,19 +243,29 @@ def _run_global_tag_renamer(parent, dry_run: bool | None = None) -> None:
         n_pairs = len(pairs_for_exec)
         # Sort so deeper tags (more "::") are renamed first
         pairs_for_exec.sort(key=lambda p: p.old.count("::"), reverse=True)
-        # Compose message for confirmation window (no preview)
-        msg = (
-            f"Loaded pairs: {pf.total_loaded} (CSV files: {len(csv_files)}; JSON files: {len(json_files)})\n"
-            f"After normalize/resolve: {pf.after_normalize}\n"
-            f"Valid parent rename ops: {n_pairs}\n"
-            f"Skipped (old tag not found): {len(pf.skipped_nonexistent)}\n"
-            f"Cycles blocked: {len(pf.cycles_blocked)}\n\n"
-            f"DRY_RUN (this run) = {run_dry}\n"
-            f"ALLOW_REGEX (config) = {allow_regex}\n"
-            "\nProceed with global rename?"
-        )
-        if QMessageBox.question(parent, "Global Tag Renamer — Preflight", msg) != QMessageBox.StandardButton.Yes:
-            return
+
+        # * Optional preflight confirmation popup
+        if show_preflight_prompt:
+            msg = (
+                f"Loaded pairs: {pf.total_loaded} (CSV files: {len(csv_files)}; JSON files: {len(json_files)})\n"
+                f"After normalize/resolve: {pf.after_normalize}\n"
+                f"Valid parent rename ops: {n_pairs}\n"
+                f"Skipped (old tag not found): {len(pf.skipped_nonexistent)}\n"
+                f"Cycles blocked: {len(pf.cycles_blocked)}\n\n"
+                f"DRY_RUN (this run) = {run_dry}\n"
+                f"ALLOW_REGEX (config) = {allow_regex}\n"
+                "\nProceed with global rename?"
+            )
+            if (
+                QMessageBox.question(
+                    parent,
+                    "Global Tag Renamer — Preflight",
+                    msg,
+                )
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+
         # Execute in background with a collection handle (single undo step)
         def _exec(col):
             out = _execute(col, pairs_for_exec, dry_run=run_dry)
@@ -205,7 +288,15 @@ def _run_global_tag_renamer(parent, dry_run: bool | None = None) -> None:
                 f"Pairs skipped: {len(out.skipped)}\n"
                 f"Total notes changed: {out.total_notes_changed}"
             )
-            QMessageBox.information(parent, "Global Tag Renamer — Done", summary)
+            # If nothing actually changed, add a brief hint so the user understands why.
+            if out.total_notes_changed == 0 and out.applied:
+                summary += (
+                    "\n\nNo notes were changed.\n"
+                    "This usually means none of the 'old' tags from your rules\n"
+                    "exist in this collection (or they were already renamed)."
+                )
+            if show_final_summary:
+                QMessageBox.information(parent, "Global Tag Renamer — Done", summary)
 
         def _on_failure(e):
             # Ensure progress UI is closed on error
@@ -225,7 +316,9 @@ def _run_global_tag_renamer(parent, dry_run: bool | None = None) -> None:
         parent=mw,
         op=_pf,
         success=_after_preflight,
-    ).failure(lambda e: QMessageBox.critical(parent, "Global Tag Renamer — Error", str(e))).run_in_background()
+    ).failure(
+        lambda e: QMessageBox.critical(parent, "Global Tag Renamer — Error", str(e))
+    ).run_in_background()
 
 
 
@@ -519,6 +612,12 @@ def _write_report(out: Outcome, pf: Preflight, run_mode_dry: bool, allow_regex: 
     lines.append(f"- Pairs applied: {len(out.applied)}")
     lines.append(f"- Pairs skipped: {len(out.skipped)}")
     lines.append(f"- Total notes changed: {out.total_notes_changed}")
+    if out.total_notes_changed == 0 and out.applied:
+        lines.append("")
+        lines.append(
+            "No notes were changed. This usually means none of the 'old' tags from your "
+            "rules exist in this collection (or they were already renamed)."
+        )
     # Show the exact tag search used for counts (helps debug "why so few?")
     if out.applied:
         lines.append("")
@@ -551,6 +650,33 @@ def _write_report(out: Outcome, pf: Preflight, run_mode_dry: bool, allow_regex: 
 
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+def run_tag_renamer_subset(
+    parent,
+    pairs: Sequence[Pair],
+    run_dry: bool,
+    csv_files: list[Path],
+    json_files: list[Path],
+) -> None:
+    """
+    Run the tag renamer on a caller-provided subset of Pair rules.
+
+    Intended for use by the Tag Updates combined picker, which:
+      - calls load_all_pairs_for_ui() to build the full list
+      - lets the user choose a subset of rules
+      - passes that subset into this helper
+    """
+    # Ensure we always pass a concrete list to the core
+    _run_tag_renamer_core(
+        parent=parent,
+        raw_pairs=list(pairs),
+        run_dry=run_dry,
+        csv_files=csv_files,
+        json_files=json_files,
+        show_preflight_prompt=False,   # Tag Updates already confirmed; skip preflight popup
+        show_final_summary=False,      # Tag Updates will show its own summary; suppress extra window
+    )
 
 # Toolbar entrypoint for _Main_Toolbar launcher
 def run_tag_renamer(*_args, **_kwargs):

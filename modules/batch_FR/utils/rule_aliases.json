@@ -1,0 +1,10 @@
+{
+  "Flex-L_rules.json": "",
+  "MISC_SAFE_rules.json": "Misc Safe Rules",
+  "bold-cloze_rules.json": "",
+  "img_rules.json": "IMG Rules",
+  "increase_decrease_rules.json": "'↑ / ↓' Rule",
+  "small_rules.json": "Small Rules",
+  "space_del_rule.json": "Del Extra spaces",
+  "style-br_rules.json": "<br> Styling fix"
+}

@@ -77,6 +77,7 @@ def run_batch_find_replace(
     dry_run: Optional[bool] = None,
     show_progress: bool = True,
     notes_limit: Optional[int] = None,
+    rules_files: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Dict[str, Any]:
     """\
     * Orchestrate: load rules, search notes, apply, and log (pure in-Anki).
@@ -89,7 +90,26 @@ def run_batch_find_replace(
 
     # 1) Discover + load rules (deterministic; honors order_preference, Defaults)
     cfg_dict: Dict[str, Any] = dict(config_snapshot)
-    rules: List[Dict[str, Any]] = load_rules_from_config(cfg_dict)
+    rules: List[Dict[str, Any]] = []
+
+    if rules_files is not None:
+        # * When a subset of rule files is provided (e.g. from the toolbar UI),
+        # * restrict loading to just those paths.
+        for rf in rules_files:
+            try:
+                rules.extend(
+                    load_rules_from_file(
+                        rf,
+                        defaults=cfg.defaults,
+                        fields_all=cfg.fields_all,
+                    )
+                )
+            except Exception:
+                # ignore bad paths; they will be surfaced via report if needed
+                pass
+    else:
+        # * Default behavior: load according to config (rules_path, order_preference, etc.)
+        rules.extend(load_rules_from_config(cfg_dict))
 
     # Accept any in-memory rule dicts (normalize for safety)
     rules.extend([normalize_rule(r) for r in rulesets if isinstance(r, dict)])
@@ -98,7 +118,13 @@ def run_batch_find_replace(
     for rs in rulesets:
         if isinstance(rs, (str, Path)):
             try:
-                rules.extend(load_rules_from_file(rs, defaults=cfg.defaults, fields_all=cfg.fields_all))
+                rules.extend(
+                    load_rules_from_file(
+                        rs,
+                        defaults=cfg.defaults,
+                        fields_all=cfg.fields_all,
+                    )
+                )
             except Exception:
                 # ignore bad paths; they will be surfaced via report if needed
                 pass
@@ -132,6 +158,10 @@ def run_batch_find_replace(
 
     # 4) Init report and carry invalid rules / dry-run flag
     report: Dict[str, Any] = _init_report(cfg)
+    if rules_files is not None:
+        report["rules_files_used"] = [str(Path(p)) for p in rules_files]
+    else:
+        report["rules_files_used"] = None
     report["invalid_rules"] = invalid_rules
     report["dry_run"] = dry
 

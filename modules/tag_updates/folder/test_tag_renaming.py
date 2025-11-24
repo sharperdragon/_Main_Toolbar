@@ -11,7 +11,7 @@ DESKTOP = "/Users/claytongoddard/Desktop"
 TS_FORMAT = "%H-%M_%m-%d"
 ADDONS_PATH = "/Users/claytongoddard/Library/Application Support/Anki2/addons21"
 
-PKG = "_Main_Toolbar.modules.tag_renaming"  # same path used by Run_add_ons loader
+PKG = "_Main_Toolbar.modules.tag_updates"  # same path used by Run_add_ons loader
 from datetime import datetime
 from pathlib import Path
 
