@@ -1,7 +1,10 @@
 {
   "Flex-L_rules.json": "",
   "MISC_SAFE_rules.json": "Misc Safe Rules",
+  "acid-base_rules.json": "",
   "bold-cloze_rules.json": "",
+  "copy_remove_rules.txt": "",
+  "img_rules copy.json": "",
   "img_rules.json": "IMG Rules",
   "increase_decrease_rules.json": "'↑ / ↓' Rule",
   "small_rules.json": "Small Rules",

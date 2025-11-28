@@ -1,0 +1,15 @@
+[
+{
+    "exclude_query": [
+    "\\{\\{c\\d::[^\\}:]*?class=.alk.[^\\}]*?\\}\\}"
+    ],
+    "pattern":"(\\{\\{c\\d::[^\\}:]*?)\\b(alkalosis)\\b([^\\}]*?\\}\\})",
+    "replacement": "$1<span class=\"alk\">$2</span>$3",
+    "regex": true,
+    "loop": false,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+}
+]

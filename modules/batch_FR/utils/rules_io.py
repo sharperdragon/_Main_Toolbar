@@ -487,17 +487,20 @@ def load_rules_from_config(
     paths = discover_from_config(cfg.get("rules_path", ""), order_pref)
 
     # Skip remove files (they are handled separately by load_remove_sets_from_config)
-    remove_name = cfg.get("remove_rules_name")
+    remove_suffix = cfg.get("remove_rules_suffix")
     field_remove_name = cfg.get("field_remove_rules_name")
-    skip_names = {n for n in (remove_name, field_remove_name) if n}
-    if skip_names:
+    if remove_suffix or field_remove_name:
         filtered: List[Path] = []
         for p in paths:
             try:
                 name = Path(p).name
             except Exception:
                 name = str(p)
-            if name in skip_names:
+            # Skip the dedicated field-remove file
+            if field_remove_name and name == field_remove_name:
+                continue
+            # Skip any *_remove_rules.txt (or whatever suffix is configured)
+            if remove_suffix and name.endswith(remove_suffix):
                 continue
             filtered.append(p)
         paths = filtered
@@ -538,22 +541,45 @@ def load_remove_sets_from_config(
     remove_path = cfg.get("remove_path")
     field_remove_path = cfg.get("field_remove_path")
 
-    # Derive from rules_path + *_name if paths are missing
     rules_root = cfg.get("rules_path")
-    if rules_root:
-        base = Path(rules_root).expanduser()
-        if not remove_path and cfg.get("remove_rules_name"):
-            remove_path = str((base / cfg["remove_rules_name"]).resolve())
-        if not field_remove_path and cfg.get("field_remove_rules_name"):
-            field_remove_path = str(
-                (base / cfg["field_remove_rules_name"]).resolve()
-            )
+    remove_suffix = cfg.get("remove_rules_suffix")
+    field_remove_name = cfg.get("field_remove_rules_name")
 
+    # Collect all global remove files
+    remove_paths: List[Path] = []
+    seen_remove: set[str] = set()
+
+    def _add_remove_path(p: Path) -> None:
+        s = str(p)
+        if s not in seen_remove:
+            seen_remove.add(s)
+            remove_paths.append(p)
+
+    # Discover files under rules_root that match the configured suffix
+    if rules_root and remove_suffix:
+        base = Path(rules_root).expanduser()
+        if base.exists() and base.is_dir():
+            for p in base.iterdir():
+                if p.is_file() and p.name.endswith(remove_suffix):
+                    _add_remove_path(p.resolve())
+
+    # Optional explicit single remove_path for backwards compat / overrides
     if remove_path:
-        pats = load_remove_patterns(remove_path)
-        out["remove"] = shape_remove_patterns_to_rules(
-            pats, defaults, fields_all
-        )
+        _add_remove_path(Path(remove_path).expanduser().resolve())
+
+    # Resolve the field-remove file path from config if needed
+    if not field_remove_path and rules_root and field_remove_name:
+        base = Path(rules_root).expanduser()
+        field_remove_path = str((base / field_remove_name).resolve())
+
+    if remove_paths:
+        all_remove_rules: List[Dict[str, Any]] = []
+        for p in remove_paths:
+            pats = load_remove_patterns(p)
+            all_remove_rules.extend(
+                shape_remove_patterns_to_rules(pats, defaults, fields_all)
+            )
+        out["remove"] = all_remove_rules
 
     if field_remove_path:
         pats = load_remove_patterns(field_remove_path)

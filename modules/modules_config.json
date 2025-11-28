@@ -5,8 +5,8 @@
   },
   "batch_FR_config": {
     "rules_path": "batch_FR/rules",
-    "remove_rules_name": "remove.txt",
-    "field_remove_rules_name": "remove_fields.txt",
+    "remove_rules_suffix": "_remove_rules.txt",
+    "field_remove_rules_name": "field_remove_rules.txt",
     "fields_all": [
       "Text",
       "Extra",

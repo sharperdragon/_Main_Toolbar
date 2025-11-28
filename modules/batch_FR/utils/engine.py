@@ -88,6 +88,13 @@ def run_batch_find_replace(
     cfg = _coerce_run_config(config_snapshot)
     dry = bool(dry_run) if dry_run is not None else False
 
+    # ! Dedicated loop cap for remove rules (can be overridden via remove_config.max_loops)
+    remove_cfg = getattr(cfg, "remove_config", {}) or {}
+    try:
+        remove_max_loops = int(remove_cfg.get("max_loops", cfg.max_loops))
+    except Exception:
+        remove_max_loops = cfg.max_loops
+
     # 1) Discover + load rules (deterministic; honors order_preference, Defaults)
     cfg_dict: Dict[str, Any] = dict(config_snapshot)
     rules: List[Dict[str, Any]] = []
@@ -154,6 +161,7 @@ def run_batch_find_replace(
         cfg_dict["field_remove_path"] = str(field_remove_rules)
 
     remove_sets = load_remove_sets_from_config(cfg_dict)
+    remove_ruleset: List[Dict[str, Any]] = remove_sets.get("remove", [])
     field_remove_ruleset: List[Dict[str, Any]] = remove_sets.get("field_remove", [])
 
     # 4) Init report and carry invalid rules / dry-run flag
@@ -167,6 +175,8 @@ def run_batch_find_replace(
 
     for idx, rule in enumerate(ready, start=1):
         per = _init_per_rule(rule, idx)
+        # * Record the configured remove loop cap so it shows up in logs
+        per["remove_max_loops"] = remove_max_loops
         # ! Translate $1-style backrefs into Python-compatible replacement once per rule
         py_repl = _coerce_repl_for_python(rule.replacement, rule.regex)
         try:
@@ -184,16 +194,50 @@ def run_batch_find_replace(
                     before = note[field]
                     working = before
 
-                    # 4a) Apply field-remove patterns first (replace with "")
-                    for rr in field_remove_ruleset:
+                    # 4a) Apply global remove patterns (from remove.txt) first
+                    for rr in remove_ruleset:
                         patt = rr.get("pattern", "")
-                        rflags = rr.get("flags", "m")
-                        loops_cap = cfg.max_loops if bool(rr.get("loop", True)) else 1
-                        working, rm_n, _ = subn_until_stable(patt, "", working, flags=rflags, max_loops=loops_cap)
+                        if not patt:
+                            continue
+                        repl = rr.get("replacement", "")  # TXT-based remove rules will use "" here
+                        loops_cap = remove_max_loops if bool(rr.get("loop", True)) else 1
+                        working, rm_n, loops_used = apply_substitution(
+                            patt,
+                            repl,
+                            working,
+                            is_regex=bool(rr.get("regex", True)),
+                            flags=rr.get("flags", "ms"),
+                            max_loops=loops_cap,
+                        )
                         if rm_n:
                             per["remove_field_subs"] += rm_n
+                        if loops_used:
+                            per["remove_loops_used"] += loops_used
+                            if bool(rr.get("loop", True)):
+                                per["remove_loop"] = True
 
-                    # 4b) Apply main rule (supports pattern list + literal/regex)
+                    # 4b) Apply field-remove patterns (from remove_fields.txt) next (replace with "")
+                    for rr in field_remove_ruleset:
+                        patt = rr.get("pattern", "")
+                        if not patt:
+                            continue
+                        loops_cap = remove_max_loops if bool(rr.get("loop", True)) else 1
+                        working, rm_n, loops_used = apply_substitution(
+                            patt,
+                            "",
+                            working,
+                            is_regex=bool(rr.get("regex", True)),
+                            flags=rr.get("flags", "ms"),
+                            max_loops=loops_cap,
+                        )
+                        if rm_n:
+                            per["remove_field_subs"] += rm_n
+                        if loops_used:
+                            per["remove_loops_used"] += loops_used
+                            if bool(rr.get("loop", True)):
+                                per["remove_loop"] = True
+
+                    # 4c) Apply main rule (supports pattern list + literal/regex)
                     patterns: List[str] = rule.pattern if isinstance(rule.pattern, list) else [str(rule.pattern)]
                     loops_cap = cfg.max_loops if rule.loop else 1
 
@@ -210,12 +254,12 @@ def run_batch_find_replace(
                         )
                         total_subs_this_field += subs
 
-                    # 4c) Guard against deletions using original before and final after
+                    # 4d) Guard against deletions using original before and final after
                     if _guard_exceeded(rule, before, after):
                         per["guard_skips"] += 1
                         continue
 
-                    # 4d) Guard against broken HTML/cloze structure when it was valid before
+                    # 4e) Guard against broken HTML/cloze structure when it was valid before
                     if not basic_html_cloze_balance_ok(before, after):
                         per["guard_skips"] += 1
                         continue
@@ -434,6 +478,10 @@ def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
         "flags": rule.flags,
         "fields": rule.fields,
         "loop": rule.loop,
+        # --- remove-loop logging additions:
+        "remove_loop": False,          # any remove rule actually looped?
+        "remove_max_loops": 0,         # configured cap for remove rules
+        "remove_loops_used": 0,        # total passes used by remove rules
         "replacement": rule.replacement,
         "notes_matched": 0,
         "notes_changed": 0,         # actual commits
@@ -490,6 +538,10 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
         subs = per.get("total_subs", 0)
         guard_skips = per.get("guard_skips", 0)
         rm_field_subs = per.get("remove_field_subs", 0)
+        # --- Fetch remove-loop metrics for summary
+        rm_loop = per.get("remove_loop", False)
+        rm_max_loops = per.get("remove_max_loops", 0)
+        rm_loops_used = per.get("remove_loops_used", 0)
 
         if dry:
             lines.append(
@@ -497,7 +549,10 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
                 f"would_change={would_change} "
                 f"subs={subs} "
                 f"guard_skips={guard_skips} "
-                f"rm_field_subs={rm_field_subs}"
+                f"rm_field_subs={rm_field_subs} "
+                f"rm_loop={rm_loop} "
+                f"rm_loops_used={rm_loops_used} "
+                f"rm_max_loops={rm_max_loops}"
             )
         else:
             lines.append(
@@ -505,7 +560,10 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
                 f"changed={changed} "
                 f"subs={subs} "
                 f"guard_skips={guard_skips} "
-                f"rm_field_subs={rm_field_subs}"
+                f"rm_field_subs={rm_field_subs} "
+                f"rm_loop={rm_loop} "
+                f"rm_loops_used={rm_loops_used} "
+                f"rm_max_loops={rm_max_loops}"
             )
         ex = per.get("examples", [])
         for i, e in enumerate(ex, 1):

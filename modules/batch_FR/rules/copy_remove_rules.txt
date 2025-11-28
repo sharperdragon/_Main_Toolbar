@@ -2,3 +2,4 @@
 \n+
 <span[^>]+?></span>
 <span +style=\"font-size: +10pt;\">.+?</span>
+<div> *</div>

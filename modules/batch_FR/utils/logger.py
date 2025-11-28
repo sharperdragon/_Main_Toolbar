@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 import time
 from typing import Optional, Iterable, List, Dict, Any
+from ...log_cleanup import delete_old_anki_log_files
 
 # --- Internal helpers for human-friendly previews ---------------------------
 
@@ -220,6 +221,12 @@ def write_batch_fr_debug(
         lines.append(f"- log_mode: `{getattr(cfg, 'log_mode', '')}`")
         lines.append(f"- include_unchanged: {getattr(cfg, 'include_unchanged', False)}")
         lines.append(f"- max_loops: {getattr(cfg, 'max_loops', 0)}")
+        # Expose remove-loop configuration
+        remove_cfg = getattr(cfg, "remove_config", {}) or {}
+        lines.append(f"- remove_config.loop: {bool(remove_cfg.get('loop', True))}")
+        lines.append(
+            f"- remove_config.max_loops: {remove_cfg.get('max_loops', getattr(cfg, 'max_loops', 0))}"
+        )
         lines.append("")
 
         # Summary section
@@ -260,10 +267,10 @@ def write_batch_fr_debug(
             # Table 1: core numeric stats
             lines.append("")
             if dry:
-                lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs |")
+                lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_used | rm_max_loops |")
             else:
-                lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs |")
-            lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|")
+                lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_used | rm_max_loops |")
+            lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|")
             for per in per_rules:
                 idx = per.get("index", "?")
                 fields = per.get("fields", [])
@@ -276,13 +283,16 @@ def write_batch_fr_debug(
                 subs = per.get("total_subs", 0)
                 guard_skips = per.get("guard_skips", 0)
                 rm_field_subs = per.get("remove_field_subs", 0)
+                rm_loop = per.get("remove_loop", False)
+                rm_loops_used = per.get("remove_loops_used", 0)
+                rm_max_loops = per.get("remove_max_loops", 0)
                 if dry:
                     lines.append(
-                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {would_change} | {subs} | {guard_skips} | {rm_field_subs} |"
+                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {would_change} | {subs} | {guard_skips} | {rm_field_subs} | {rm_loop} | {rm_loops_used} | {rm_max_loops} |"
                     )
                 else:
                     lines.append(
-                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {changed} | {subs} | {guard_skips} | {rm_field_subs} |"
+                        f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {changed} | {subs} | {guard_skips} | {rm_field_subs} | {rm_loop} | {rm_loops_used} | {rm_max_loops} |"
                     )
 
             # Table 2: error / pattern / replacement
@@ -346,6 +356,25 @@ def write_batch_fr_debug(
 
         out_text = "\n".join(lines) + "\n"
         out_path.write_text(out_text, encoding="utf-8")
+
+        # * Clean up old log files after writing a new debug log
+        try:
+            try:
+                # Preferred: clean the same directory we just wrote to
+                delete_old_anki_log_files(
+                    base_dir=out_dir,
+                    max_age_hours=1,
+                    dry_run=False,
+                )
+            except TypeError:
+                # Fallback: older signature without base_dir support
+                delete_old_anki_log_files(
+                    max_age_hours=1,
+                    dry_run=False,
+                )
+        except Exception as e:
+            print(f"[batch_FR] Log cleanup failed: {e}", file=sys.stderr)
+
         return out_path
 
     except Exception as e:  # pragma: no cover
