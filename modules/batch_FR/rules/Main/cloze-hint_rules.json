@@ -1,0 +1,51 @@
+[
+{
+  "pattern": "(\\{\\{c(\\d::[^\\}:]+?)::)(?:(?:what)|(?:which))\\s*(?:(?:kind)|(?:is\\s+the))*\\s*(?:of)*",
+  "replacement": "$1",
+  "flags": "im",
+  "regex": true,
+    "fields": [
+    "Text"
+    ],
+  "delete_chars": {"max_chars": 12, "count_spaces": false }
+},
+{
+  "pattern": "(\\{\\{c\\d::[^\\}:]+?::)\\s",
+  "replacement": "$1",
+  "flags": "im",
+  "regex": true,
+  "loop": true,
+  "fields": [
+    "Text"
+    ],
+  "delete_chars": {"max_chars": 1, "count_spaces": true }
+},
+{
+    "pattern":"(\\{\\{c\\d)::((Increased)|(Decreased)|(Increases)|(Decreases)|(increased)|(decreased)|(increases)|(decreases))",
+    "replacement": "$1::<i>$2</i>",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+  "delete_chars": {"max_chars": 0, "count_spaces": true }
+  },
+{
+    "pattern":"(\\{\\{c\\d::[^\\:\\}]+?)::([^\\}]+?)\\sor\\s([^\\}]+?\\}\\})",
+    "replacement": "$1::$2 \\/ $3",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+  "delete_chars": {"max_chars": 8, "count_spaces": true }
+},
+{
+    "query": "re:.::include\\sROA\\}\\}",
+    "pattern":"include\\sROA\\}\\}",
+    "replacement": "+ ROA}}",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+  "delete_chars": {"max_chars": 8, "count_spaces": true }
+}
+]

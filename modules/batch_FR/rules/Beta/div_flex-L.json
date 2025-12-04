@@ -1,0 +1,15 @@
+[
+{
+    "query": "-Text:re:class=\"flex-L\"",
+    "exclude_query": [
+    "re:class=\"flex-L\"",
+    "re:((</div><div>)|(<br>))\\+((</div><div>)|(<br>))"
+    ],
+    "pattern":"",
+    "replacement": "",
+    "regex": "true",
+    "fields": [
+    "Text"
+    ]
+}
+]

@@ -1,0 +1,11 @@
+[
+{
+    "pattern": "(\\}\\}) +(<b>philic</b>)",
+    "replacement": "$1$2",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+}
+]

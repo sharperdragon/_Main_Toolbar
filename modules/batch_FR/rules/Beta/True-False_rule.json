@@ -1,0 +1,20 @@
+[
+{
+    "pattern":"(\\{\\{c\\d)::T::T\\s*\\/\\s*F\\}\\}",
+    "replacement": "$1::True::T / F}}",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+},
+{
+    "pattern":"(\\{\\{c\\d)::F::T\\s*\\/\\s*F\\}\\}",
+    "replacement": "$1::False::T / F}}",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+}
+]

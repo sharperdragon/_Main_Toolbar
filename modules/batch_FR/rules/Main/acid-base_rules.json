@@ -1,0 +1,28 @@
+[
+  {
+    "exclude_query": [
+      "Text:re:<span class=\\\"alk\\\">\\s*alkalosis"
+    ],
+    "pattern": "(\\{\\{c\\d::[^}:]*?)\\b(alkalosis)\\b([^}]*?\\}\\})",
+    "replacement": "$1<span class=\"alk\">$2</span>$3",
+    "regex": true,
+    "loop": false,
+    "fields": [
+      "Text"
+    ],
+    "delete_chars": { "max_chars": 0, "count_spaces": true}
+  },
+  {
+    "exclude_query": [
+      "Text:re:<span class=\\\"acid\\\">\\s*acidosis"
+    ],
+    "pattern": "(\\{\\{c\\d::[^}:]*?)\\b(acidosis)\\b([^}]*?\\}\\})",
+    "replacement": "$1<span class=\"acid\">$2</span>$3",
+    "regex": true,
+    "loop": false,
+    "fields": [
+      "Text"
+    ],
+    "delete_chars": { "max_chars": 0, "count_spaces": true}
+  }
+]

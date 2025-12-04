@@ -68,16 +68,43 @@ def discover_rule_files(root: Union[str, Path]) -> List[Path]:
     """
     * Return a list of rule file paths given a directory or a single file.
     - Supports .json, .jsonl, .txt (line rules), plus future extensions as needed.
+    - If `root` is a directory, recursively searches all subfolders so rules can
+      be grouped by their parent folder (e.g. Main, Beta).
     """
     p = Path(root).expanduser().resolve()
+
+    # * Allow pointing directly at a single rule file
     if p.is_file():
         return [p]
+
+    # * If the path does not exist, nothing to discover
     if not p.exists():
         return []
+
+    # * Collect all matching files recursively under the root directory
+    exts = ("*.json", "*.jsonl", "*_rules.json", "*_rule.json", "*.txt")
     out: List[Path] = []
-    for ext in ("*.json", "*.jsonl", "*_rules.json", "*_rule.json", "*.txt"):
-        out.extend(sorted(p.glob(ext)))
-    return out
+
+    try:
+        for ext in exts:
+            # ? Use rglob so nested folders like Main/Beta are included
+            out.extend(sorted(p.rglob(ext)))
+    except Exception as e:
+        # ! Discovery failures should not crash the add-on; log and bail
+        log_warning(f"discover_rule_files failed for {p}: {e}")
+        return []
+
+    # * Deduplicate while preserving order, in case a file matches multiple patterns
+    seen: set[str] = set()
+    unique: List[Path] = []
+    for path in out:
+        s = str(path)
+        if s in seen:
+            continue
+        seen.add(s)
+        unique.append(path)
+
+    return unique
 
 
 def sort_paths_by_preference(

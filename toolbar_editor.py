@@ -68,7 +68,7 @@ class ToolbarEditorDialog(QDialog):
 
         # Open modeless so Anki remains interactive; destroy widget on close
         self.setModal(False)
-        self.setWindowModality(Qt.NonModal)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
 
         # Layout + WebView

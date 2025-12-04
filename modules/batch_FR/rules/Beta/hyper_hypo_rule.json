@@ -1,0 +1,23 @@
+[
+{
+    "query": "re:\\{\\{c\\d::(H|h)ypo",
+    "pattern":"(\\{\\{c\\d)::(H|h)ypo",
+        "exclude_query": [
+    "Text:re:\\{\\{c\\d::(H|h)ypophysis"
+    ],
+    "replacement": "$1::<span class=\"hypo\">$2ypo</span>",
+    "regex": "true",
+    "fields": [
+    "Text"
+    ]
+},
+{
+    "query": "re:\\{\\{c\\d::(H|h)yper",
+    "pattern":"(\\{\\{c\\d)::(H|h)yper",
+    "replacement": "$1::<span class=\"hyper\">$2yper</span>",
+    "regex": "true",
+    "fields": [
+    "Text"
+    ]
+}
+]

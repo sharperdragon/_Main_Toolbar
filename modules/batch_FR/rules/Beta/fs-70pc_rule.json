@@ -1,0 +1,11 @@
+[
+{
+    "query": "re:([^mnId>p])((?:(?:g)|(?:mg)|(?:ng)|(?:pg)|(?:IU)|(?:mEq)|(?:mOsm)|(?:cells)|(?:ng)|(?:mg)|(?:g)|(?:dL)|(?:mL)|(?:L))/(?:(?:g)|(?:dL)|(?:mg)|(?:mL)|(?:kg)|(?:dL)|(?:day)))",
+    "pattern":"([^mnId>p])((?:(?:g)|(?:mg)|(?:ng)|(?:pg)|(?:IU)|(?:mEq)|(?:mOsm)|(?:cells)|(?:ng)|(?:mg)|(?:g)|(?:dL)|(?:mL)|(?:L))/(?:(?:g)|(?:dL)|(?:mg)|(?:mL)|(?:kg)|(?:dL)|(?:day)))",
+    "replacement": "$1<span class=\"fs-70pc\">$2</span>",
+    "regex": "true",
+    "fields": [
+    "Text"
+    ]
+}
+]

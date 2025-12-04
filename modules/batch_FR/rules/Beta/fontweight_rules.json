@@ -1,17 +1,16 @@
 [
 {
-    "query": "}} <b>philic</b>",
+    "query": "",
     "exclude_query": [
-    ""
+    "tag:special_formatting"
     ],
     "pattern":"",
     "replacement": "",
-    "regex": true,
-    "loop": false,
+    "regex": "true",
+    "loop": "True",
     "fields": [
     "Text", "Extra", "Extra2", "Extra3", "Extra4", "Extra5",
     "Extra6", "Extra7", "Front", "Back", "Display", "Button"
-    ],
-    "delete_chars": {"max_chars": 0, "count_spaces": true}
+    ]
 }
 ]

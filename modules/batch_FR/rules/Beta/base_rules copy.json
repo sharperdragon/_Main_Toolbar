@@ -1,0 +1,62 @@
+[
+   {
+    "pattern": "&nbsp;",
+    "replacement": " ",
+    "delete_chars": {
+        "max_chars": 6,
+        "count_spaces": true}
+    },    
+    {
+    "query": "re:(\\s)</(b|i|u)>",
+    "pattern": "(\\s)</(b|i|u)>",
+    "replacement": "</$2>$1",
+    "loop": true,
+    "delete_chars": {
+        "max_chars": 0,
+        "count_spaces": true}
+    },
+    {
+    "query": "re:<(b|i|u)>(\\s)",
+    "pattern": "<(b|i|u)>(\\s)",
+    "replacement": "$2<$1>",
+    "loop": true,
+    "delete_chars": {
+        "max_chars": 1,
+        "count_spaces": true}
+    },
+    {
+    "query": "re:<em>(.+?)</em>",
+    "pattern": "<em>(.+?)</em>",
+    "replacement": "<i>$1</i>",
+    "loop": true,
+    "delete_chars": {
+        "max_chars": 0,
+        "count_spaces": true}
+    },
+    {
+    "query": "re:<strong>(.+?)</strong>",
+    "pattern": "<strong>(.+?)</strong>",
+    "replacement": "<b>$1</b>",
+    "delete_chars": {
+        "max_chars": 0,
+        "count_spaces": true}
+    },
+    {
+    "query": "re:<\\w>\\s*(</*((?:div)|(?:br))>)\\s*</\\w>",
+    "pattern": "<\\w>(</*((?:div)|(?:br))>)</\\w>",
+    "replacement": "$1",
+    "delete_chars": {
+        "max_chars": 0,
+        "count_spaces": true}
+    },
+    {
+    "query": "re:(</*((?:div)|(?:br))>)(?:\\s)(</*(?:(?:div)|(?:br))>)",
+    "pattern": "(</*((?:div)|(?:br))>)(?:\\s)(</*(?:(?:div)|(?:br))>)",
+    "replacement": "$1$2",
+    "loop": true,
+    "delete_chars": {
+        "max_chars": 1,
+        "count_spaces": true}
+    }
+]
+

@@ -28,7 +28,7 @@ from .regex_utils import (
     basic_html_cloze_balance_ok,
 )
 from .text_utils import safe_truncate
-from .logger import write_batch_fr_debug
+from .logger import write_batch_fr_debug, write_regex_debug
 import json
 from datetime import datetime
 
@@ -63,6 +63,9 @@ class Rule:
     fields: List[str]
     loop: bool
     delete_chars: Dict[str, Any]
+    # Provenance fields
+    source_file: Optional[str] = None
+    source_index: Optional[int] = None
 
 # =========================
 # Public entrypoint
@@ -94,6 +97,8 @@ def run_batch_find_replace(
         remove_max_loops = int(remove_cfg.get("max_loops", cfg.max_loops))
     except Exception:
         remove_max_loops = cfg.max_loops
+    # Global on/off switch for remove-rule looping
+    remove_global_loop = bool(remove_cfg.get("loop", True))
 
     # 1) Discover + load rules (deterministic; honors order_preference, Defaults)
     cfg_dict: Dict[str, Any] = dict(config_snapshot)
@@ -101,8 +106,22 @@ def run_batch_find_replace(
 
     if rules_files is not None:
         # * When a subset of rule files is provided (e.g. from the toolbar UI),
-        # * restrict loading to just those paths.
+        # * restrict loading to just those paths, but skip remove-rule files
+        remove_suffix = cfg_dict.get("remove_rules_suffix") or ""
+        field_remove_name = cfg_dict.get("field_remove_rules_name") or ""
+
         for rf in rules_files:
+            try:
+                name = Path(rf).name
+            except Exception:
+                name = str(rf)
+
+            # Skip known remove-rule files here; they are handled via load_remove_sets_from_config
+            if field_remove_name and name == field_remove_name:
+                continue
+            if remove_suffix and name.endswith(remove_suffix):
+                continue
+
             try:
                 rules.extend(
                     load_rules_from_file(
@@ -200,7 +219,13 @@ def run_batch_find_replace(
                         if not patt:
                             continue
                         repl = rr.get("replacement", "")  # TXT-based remove rules will use "" here
-                        loops_cap = remove_max_loops if bool(rr.get("loop", True)) else 1
+
+                        # Per-remove-rule flag
+                        rr_loop_flag = bool(rr.get("loop", True))
+                        # Effective behavior: must satisfy both per-rule and global toggle
+                        effective_loop = rr_loop_flag and remove_global_loop
+                        loops_cap = remove_max_loops if effective_loop else 1
+
                         working, rm_n, loops_used = apply_substitution(
                             patt,
                             repl,
@@ -213,7 +238,7 @@ def run_batch_find_replace(
                             per["remove_field_subs"] += rm_n
                         if loops_used:
                             per["remove_loops_used"] += loops_used
-                            if bool(rr.get("loop", True)):
+                            if effective_loop:
                                 per["remove_loop"] = True
 
                     # 4b) Apply field-remove patterns (from remove_fields.txt) next (replace with "")
@@ -221,7 +246,11 @@ def run_batch_find_replace(
                         patt = rr.get("pattern", "")
                         if not patt:
                             continue
-                        loops_cap = remove_max_loops if bool(rr.get("loop", True)) else 1
+
+                        rr_loop_flag = bool(rr.get("loop", True))
+                        effective_loop = rr_loop_flag and remove_global_loop
+                        loops_cap = remove_max_loops if effective_loop else 1
+
                         working, rm_n, loops_used = apply_substitution(
                             patt,
                             "",
@@ -234,7 +263,7 @@ def run_batch_find_replace(
                             per["remove_field_subs"] += rm_n
                         if loops_used:
                             per["remove_loops_used"] += loops_used
-                            if bool(rr.get("loop", True)):
+                            if effective_loop:
                                 per["remove_loop"] = True
 
                     # 4c) Apply main rule (supports pattern list + literal/regex)
@@ -296,14 +325,18 @@ def run_batch_find_replace(
     if not dry:
         mw_ref.col.save()
 
-    # 6) Write logs/report files
+    # 6) Build in-memory summary (no JSON/TXT files written)
     _write_reports(report, cfg)
 
-    # 7) Optional markdown debug file (Regex_Debug-style)
+    # 7) Optional markdown debug files
     debug_cfg = dict(config_snapshot.get("batch_fr_debug", {}) or {})
     debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
     if debug_path is not None:
         report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
+
+    regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
+    if regex_debug_path is not None:
+        report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
 
     return report
 
@@ -335,6 +368,8 @@ def _as_rule(r: Dict[str, Any]) -> Rule:
         fields=list(r.get("fields", ["ALL"])),
         loop=bool(r.get("loop", False)),
         delete_chars=dict(r.get("delete_chars", {"max_chars": 0, "count_spaces": True})),
+        source_file=r.get("__source_file"),
+        source_index=r.get("__source_index"),
     )
 
 def _compose_search(rule: Rule) -> str:
@@ -470,8 +505,15 @@ def _init_report(cfg: RunConfig) -> Dict[str, Any]:
     }
 
 def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
+    raw_src = getattr(rule, "source_file", None) or ""
+    try:
+        file_name = Path(str(raw_src)).name if raw_src else ""
+    except Exception:
+        file_name = str(raw_src) if raw_src else ""
     return {
         "index": idx,
+        "file": file_name,
+        "source_index": getattr(rule, "source_index", None),
         "query": _effective_query(rule),
         "exclude": rule.exclude_query,
         "pattern": rule.pattern if isinstance(rule.pattern, str) else rule.pattern[:1],
@@ -509,11 +551,8 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
     ts_fmt = cfg.ts_format or TS_FORMAT
     ts = datetime.now().strftime(ts_fmt)
     dry = bool(report.get("dry_run", False))
-    out_dir = ensure_dir(cfg.log_dir or ".")
-    json_p = ensure_parent(out_dir / f"batch_fr_summary__{ts}.json")
-    txt_p = ensure_parent(out_dir / f"batch_fr_details__{ts}.txt")
 
-    # Human-readable summary
+    # Human-readable summary (kept in-memory only)
     lines: List[str] = []
     lines.append(f"Batch Find & Replace — {ts}")
     lines.append(f"Rules: {report.get('rules', 0)}")
@@ -571,12 +610,6 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
             lines.append(f"  ex{i} [{e.get('field','?')}]: AFTER : {e.get('after','')}")
         lines.append("")
 
-    # Embed the text summary into the JSON report and write both files
+    # Store the text summary in the report (no files written here)
     details_txt = "\n".join(lines)
     report["details_txt"] = details_txt
-
-    json_p.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    txt_p.write_text(details_txt, encoding="utf-8")
-
-    report.setdefault("report_paths", {})["json"] = str(json_p)
-    report.setdefault("report_paths", {})["txt"] = str(txt_p)

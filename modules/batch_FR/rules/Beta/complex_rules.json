@@ -1,0 +1,13 @@
+[
+    {
+        "query": "re:<((br)|(div)|(img)|(span)|(a))>\\s*\\n+\\s*</((br)|(div)|(img)|(span)|(a))>",
+        "pattern":"(<(?:(?:br)|(?:div)|(?:img)|(?:span)|(?:a))>)\\s*\\n+\\s*(</((br)|(div)|(img)|(span)|(a))>)",
+        "replacement": "$1$2",
+        "regex": true,
+        "loop": false,
+        "delete_chars":{
+            "max_chars": -1,
+            "include_spaces": true
+        }
+    }
+]

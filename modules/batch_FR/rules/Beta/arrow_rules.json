@@ -1,0 +1,19 @@
+[
+{
+    "query": "re:(<(?:b|i|u)>)(⬆︎+|⬇︎+)(\\s*)",
+    "pattern":"(<(?:b|i|u)>)(⬆︎+|⬇︎+)(\\s*)",
+    "replacement": "$2$3$1",
+    "regex": "true",
+    "loop": "True",
+    "fields": [
+    "Text", "Extra", "Extra2", "Extra3", "Extra4", "Extra5",
+    "Extra6", "Extra7", "Front", "Back", "Display", "Button"
+    ]
+},
+{
+    "query": "re:(⬆︎+|⬇︎+)([^<])",
+    "pattern":"(⬆︎+|⬇︎+)([^<])",
+    "replacement": "<span class=\"fs-112pc\">$1</span>$2",
+    "regex": "true"
+}
+]

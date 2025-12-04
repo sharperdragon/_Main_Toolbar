@@ -61,10 +61,10 @@ class TagUpdatesDialog(QDialog):
         for idx, label in enumerate(rename_labels):
             item = QListWidgetItem(label, self.rename_list)
             # Make items checkable, default to checked
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
             # Store the original index from the pairs list
-            item.setData(Qt.UserRole, idx)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
             # ? Full label in tooltip for long rules
             item.setToolTip(label)
         rename_layout.addWidget(self.rename_list)
@@ -82,9 +82,9 @@ class TagUpdatesDialog(QDialog):
         self.add_count_label = QLabel("", add_widget)
         for idx, label in enumerate(add_labels):
             item = QListWidgetItem(label, self.add_list)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)
-            item.setData(Qt.UserRole, idx)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
             item.setToolTip(label)
         add_layout.addWidget(self.add_list)
         add_layout.addWidget(self.add_count_label)
@@ -107,7 +107,11 @@ class TagUpdatesDialog(QDialog):
         main_layout.addLayout(mode_layout)
 
         # Dialog buttons -----------------------------------------------------
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         main_layout.addWidget(buttons)
@@ -124,12 +128,12 @@ class TagUpdatesDialog(QDialog):
 
         def select_all() -> None:
             for i in range(list_widget.count()):
-                list_widget.item(i).setCheckState(Qt.Checked)
+                list_widget.item(i).setCheckState(Qt.CheckState.Checked)
             self._update_counts()
 
         def select_none() -> None:
             for i in range(list_widget.count()):
-                list_widget.item(i).setCheckState(Qt.Unchecked)
+                list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
             self._update_counts()
 
         btn_all.clicked.connect(select_all)
@@ -146,7 +150,7 @@ class TagUpdatesDialog(QDialog):
             total = list_widget.count()
             selected = 0
             for i in range(total):
-                if list_widget.item(i).checkState() == Qt.Checked:
+                if list_widget.item(i).checkState() == Qt.CheckState.Checked:
                     selected += 1
             return selected, total
 
@@ -176,15 +180,15 @@ class TagUpdatesDialog(QDialog):
 
         for i in range(self.rename_list.count()):
             item = self.rename_list.item(i)
-            if item.checkState() == Qt.Checked:
-                idx = item.data(Qt.UserRole)
+            if item.checkState() == Qt.CheckState.Checked:
+                idx = item.data(Qt.ItemDataRole.UserRole)
                 if isinstance(idx, int):
                     rename_idx.append(idx)
 
         for i in range(self.add_list.count()):
             item = self.add_list.item(i)
-            if item.checkState() == Qt.Checked:
-                idx = item.data(Qt.UserRole)
+            if item.checkState() == Qt.CheckState.Checked:
+                idx = item.data(Qt.ItemDataRole.UserRole)
                 if isinstance(idx, int):
                     add_idx.append(idx)
 
@@ -217,7 +221,7 @@ def run_tag_updates() -> None:
         return
 
     dlg = TagUpdatesDialog(mw, rename_labels, add_labels)
-    if dlg.exec() != QDialog.Accepted:
+    if dlg.exec() != QDialog.DialogCode.Accepted:
         return
 
     rename_idx, add_idx, dry = dlg.get_selection()

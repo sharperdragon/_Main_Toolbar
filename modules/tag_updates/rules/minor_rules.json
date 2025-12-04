@@ -1,0 +1,20 @@
+[
+  {
+    "file-defaults": { "flags": "mi", "fields": ["Tags"] }
+  },
+{
+    "pattern":[
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(4-LowerYield)",
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(5-LowYield)"
+    ],
+    "replacement": "**HighYield_Step-1::LOW::$1"
+},
+{
+    "pattern":[
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(1-HighYield)",
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(2-RelativelyHighYield)",
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(3-HighYield-temporary)"
+    ],
+    "replacement": "**HighYield_Step-1::$1"
+}
+]

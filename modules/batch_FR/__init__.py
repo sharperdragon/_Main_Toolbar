@@ -2,10 +2,7 @@ from __future__ import annotations
 
 # * Standard library
 from pathlib import Path
-from datetime import datetime
-from typing import List, Union, Optional, Dict, Any, TypedDict
-import json
-import os
+from typing import List, Union, Optional, Dict, Any
 
 # * Anki/Qt – optional at import time to keep unit tests simple
 try:  # pragma: no cover
@@ -23,6 +20,16 @@ except Exception as _e:  # pragma: no cover
 else:
     _IMPORT_ERROR = None
 
+# * Shared utilities moved into top_utils.py
+from .top_utils import (
+    TS_FORMAT,
+    DESKTOP,
+    now_stamp,
+    load_batch_fr_config,
+    _get_rules_root,
+    _discover_rule_files,
+    _prompt_batch_fr_run_options,
+)
 
 __all__ = [
     "TS_FORMAT",
@@ -33,120 +40,8 @@ __all__ = [
     "run_from_toolbar",
 ]
 
-# ! User-tunable constants (overridden by modules_config.json if present)
-TS_FORMAT: str = "%H-%M_%m-%d"  # 24-hour-minute_month-day
-DESKTOP: Path = Path("/Users/claytongoddard/Desktop")
-
-# ? Default config path for this module (relative to the modules folder)
-MODULES_CONFIG_PATH: Path = Path(__file__).resolve().parent.parent / "modules_config.json"
-
-# ? Utility: timestamp maker used by reports/logs
-def now_stamp() -> str:
-    return datetime.now().strftime(TS_FORMAT)
-
-# ------------------------------
-# Config loading & normalization
-# ------------------------------
-class BatchFRConfig(TypedDict, total=False):
-    ts_format: str
-    log_dir: str
-    rules_path: str
-    fields_all: list[str]
-    defaults: dict
-    remove_config: dict
-    log_mode: str
-    include_unchanged: bool
-    max_loops: int
-    order_preference: dict
-    batch_fr_debug: dict
-    anki_regex_check: bool
-
-def _coerce_int(val, fallback: int) -> int:
-    try:
-        return int(val)
-    except Exception:
-        return fallback
-
-def _norm_path(p: str | None) -> Path | None:
-    if not p:
-        return None
-    try:
-        return Path(os.path.expanduser(p)).resolve()
-    except Exception:
-        return None
-
-def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig:
-    """Load + normalize batch F&R config from modules_config.json; apply safe fallbacks."""
-    cfg_path = Path(config_path) if config_path else MODULES_CONFIG_PATH
-    data: Dict[str, Any] = {}
-    try:
-        text = cfg_path.read_text(encoding="utf-8")
-        data = json.loads(text)
-    except Exception:
-        data = {}
-
-    g = data.get("global_config", {}) or {}
-    b = data.get("batch_FR_config", {}) or {}
-
-    ts_fmt = g.get("ts_format") or TS_FORMAT
-    log_dir_path = _norm_path(g.get("log_dir")) or DESKTOP
-
-    # normalize types / names
-    max_loops = _coerce_int(b.get("max_loops", 30), 30)
-
-    # Resolve rules_path; treat relative paths as relative to the config file directory
-    raw_rules_path = b.get("rules_path")
-    rules_path: Path | None = None
-    if raw_rules_path:
-        candidate = Path(os.path.expanduser(raw_rules_path))
-        if candidate.is_absolute():
-            rules_path = candidate.resolve()
-        else:
-            base_dir = cfg_path.parent
-            rules_path = (base_dir / candidate).resolve()
-
-    fields_all = b.get("fields_all") or []
-    defaults = b.get("Defaults") or {}
-    remove_cfg = b.get("remove_config") or {}
-    log_mode = (b.get("log_mode") or "diff").lower()
-    include_unchanged = bool(b.get("include_unchanged", False))
-
-    # Support both the correct and legacy misspelled key for order preference
-    order_pref = b.get("order_preference")
-    if order_pref is None:
-        order_pref = b.get("order_prefernce") or {}
-
-    # Optional: per-module debug configuration and Anki regex checking toggle
-    batch_debug_cfg = b.get("batch_FR_debug") or b.get("batch_fr_debug") or {}
-    if not isinstance(batch_debug_cfg, dict):
-        batch_debug_cfg = {}
-    anki_regex_check_val = b.get("anki_regex_check", True)
-
-    # Update top-level constants so timestamps/tooltips match config
-    globals()["TS_FORMAT"] = ts_fmt
-    globals()["DESKTOP"] = log_dir_path
-
-    # build engine-facing snapshot
-    snapshot: BatchFRConfig = {
-        "ts_format": ts_fmt,
-        "log_dir": str(log_dir_path),
-        "rules_path": str(rules_path) if rules_path else "",
-        "fields_all": fields_all,
-        "defaults": defaults,
-        "remove_config": remove_cfg,
-        "log_mode": log_mode,
-        "include_unchanged": include_unchanged,
-        "max_loops": max_loops,
-        "order_preference": order_pref,
-        "batch_fr_debug": batch_debug_cfg,
-        "anki_regex_check": bool(anki_regex_check_val),
-    }
-    return snapshot
-
-
-
-# ------------------------------
-# Public API wrappers
+# -----------------------------
+# Public API wrapper (engine)
 # ------------------------------
 def run_batch_find_replace(
     mw_ref, *,
@@ -165,7 +60,7 @@ def run_batch_find_replace(
     - mw_ref: aqt.mw (Anki main window) or a reference providing .col
     - rulesets: list of rule file paths OR already-loaded rule dicts
     - remove_rules / field_remove_rules: optional pattern files
-    - config_path: path to modules_config.json; if None, default MODULES_CONFIG_PATH is used
+    - config_path: path to modules_config.json; if None, default from top_utils is used
     - dry_run: override DRY_RUN if provided (engine decides default)
     - show_progress: show a cancellable QProgressDialog
     - notes_limit: limit processed notes (useful for quick tests)
@@ -193,292 +88,10 @@ def run_batch_find_replace(
         rules_files=rules_files,
     )
 
-def _discover_rule_files(cfg: BatchFRConfig) -> List[Path]:
-    """Discover candidate rule files from the configured rules_path.
-
-    Uses the shared rules_io helpers so we include .json/.jsonl/.txt
-    and respect any order_preference in the config.
-    """
-    # Lazy import so top-level import of this module remains robust even if
-    # utils/rules_io.py has issues (e.g., during testing).
-    try:
-        from .utils.rules_io import discover_rule_files, sort_paths_by_preference  # type: ignore
-    except Exception:
-        return []
-
-    rules_path_str = cfg.get("rules_path") or ""
-    if not rules_path_str:
-        return []
-
-    # Discover files under the configured rules_path
-    try:
-        paths = discover_rule_files(rules_path_str)
-    except Exception:
-        return []
-
-    # Apply optional ordering preferences if provided
-    order_pref = cfg.get("order_preference") or cfg.get("order_prefernce") or {}
-    try:
-        paths = sort_paths_by_preference(list(paths), order_pref)  # type: ignore[arg-type]
-    except Exception:
-        # Fallback: sort by filename only
-        try:
-            paths = sorted(paths, key=lambda p: p.name.lower())
-        except Exception:
-            pass
-
-    # De-duplicate while preserving order
-    seen = set()
-    unique_files: List[Path] = []
-    for p in paths:
-        if p not in seen:
-            seen.add(p)
-            unique_files.append(p)
-
-    return unique_files
-
 
 # ------------------------------
-# Rule alias helpers
+# Toolbar entrypoint
 # ------------------------------
-def _get_alias_file_path() -> Path:
-    """
-    Return the path to the rule alias file, kept under this module's utils folder.
-    """
-    base_dir = Path(__file__).resolve().parent  # .../batch_FR
-    return base_dir / "utils" / "rule_aliases.json"
-
-
-def _load_rule_aliases(rule_files: List[Path]) -> Dict[str, str]:
-    """
-    Load or initialize rule aliases for the given rule files.
-
-    The alias file is a JSON dict mapping:
-        { "filename.json": "Nice label", ... }
-
-    Any missing filenames will be added with an empty string so the user
-    can fill them in later.
-    """
-    alias_path = _get_alias_file_path()
-    aliases: Dict[str, str] = {}
-
-    # Load existing file if present
-    if alias_path.exists():
-        try:
-            text = alias_path.read_text(encoding="utf-8")
-            data = json.loads(text)
-            if isinstance(data, dict):
-                # ensure all keys/values are strings
-                aliases = {str(k): str(v) for k, v in data.items()}
-        except Exception:
-            aliases = {}
-
-    # Ensure each rule file has an entry
-    changed = False
-    for rf in rule_files:
-        key = rf.name  # filename only
-        if key not in aliases:
-            aliases[key] = ""   # stub for user to fill in
-            changed = True
-
-    # If we added any keys or the file doesn't exist yet, write a sorted JSON
-    if changed or not alias_path.exists():
-        try:
-            sorted_aliases = {k: aliases[k] for k in sorted(aliases.keys())}
-            alias_path.write_text(
-                json.dumps(sorted_aliases, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            aliases = sorted_aliases
-        except Exception:
-            # best-effort only; if write fails, we just keep in-memory aliases
-            pass
-
-    return aliases
-
-
-def _pretty_rule_file_label(path: Path, aliases: Dict[str, str] | None = None) -> str:
-    """
-    Generate a human-friendly label for a rule file:
-    - if an alias is defined in rule_aliases.json, use that
-    - otherwise, strip common suffixes and replace underscores with spaces
-    """
-    if aliases:
-        alias = aliases.get(path.name)
-        if alias:
-            return alias
-
-    name = path.name
-
-    # Strip common suffixes
-    for suf in ("_rules.json", "_rule.json", ".json"):
-        if name.endswith(suf):
-            name = name[: -len(suf)]
-            break
-
-    # Turn underscores into spaces for readability
-    name = name.replace("_", " ")
-
-    return name or path.name
-
-def _prompt_batch_fr_run_options(parent, rule_files: List[Path]) -> Optional[Dict[str, Any]]:
-    """
-    Show a modal dialog asking:
-      1) Which rule files to run (checklist with Select all/none)
-      2) Whether to run as dry run or live
-
-    Returns:
-        {"dry_run": bool, "rules_files": List[Path]} on OK
-        None on cancel or error
-    """
-    if not rule_files:
-        try:
-            from aqt.utils import tooltip  # type: ignore
-            tooltip("Batch F&R: no rule files found under 'rules_path' in modules_config.json.", period=5000)
-        except Exception:
-            pass
-        return None
-
-    try:
-        from aqt.qt import (  # type: ignore
-            QDialog,
-            QListWidget,
-            QListWidgetItem,
-            QVBoxLayout,
-            QHBoxLayout,
-            QRadioButton,
-            QDialogButtonBox,
-            QPushButton,
-            QLabel,
-            Qt,
-        )
-    except Exception:
-        # If Qt cannot be imported, bail out gracefully.
-        return None
-
-    # Load or initialize aliases for the discovered rule files
-    aliases = _load_rule_aliases(rule_files)
-
-    dlg = QDialog(parent)
-    dlg.setWindowTitle("Batch Find & Replace — Select Rule Files")
-
-    layout = QVBoxLayout(dlg)
-    layout.addWidget(QLabel("Select which rule files to run:", dlg))
-
-    # * List of rule files with checkboxes
-    list_widget = QListWidget(dlg)
-    for path in rule_files:
-        label = _pretty_rule_file_label(path, aliases)
-        item = QListWidgetItem(label)
-        item.setToolTip(str(path))
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(Qt.Checked)
-        list_widget.addItem(item)
-    layout.addWidget(list_widget)
-
-    # * Select all / Select none controls
-    btn_row = QHBoxLayout()
-    select_all_btn = QPushButton("Select all", dlg)
-    select_none_btn = QPushButton("Select none", dlg)
-    btn_row.addWidget(select_all_btn)
-    btn_row.addWidget(select_none_btn)
-    btn_row.addStretch()
-    layout.addLayout(btn_row)
-
-    def _select_all() -> None:
-        for i in range(list_widget.count()):
-            list_widget.item(i).setCheckState(Qt.Checked)
-
-    def _select_none() -> None:
-        for i in range(list_widget.count()):
-            list_widget.item(i).setCheckState(Qt.Unchecked)
-
-    select_all_btn.clicked.connect(_select_all)
-    select_none_btn.clicked.connect(_select_none)
-
-    # * Mode selection: dry run vs live
-    mode_row = QHBoxLayout()
-    mode_label = QLabel("Run mode:", dlg)
-    dry_radio = QRadioButton("Dry run (no changes)", dlg)
-    live_radio = QRadioButton("Apply changes", dlg)
-    dry_radio.setChecked(True)
-    mode_row.addWidget(mode_label)
-    mode_row.addWidget(dry_radio)
-    mode_row.addWidget(live_radio)
-    mode_row.addStretch()
-    layout.addLayout(mode_row)
-
-    # * OK / Cancel buttons
-    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
-    layout.addWidget(buttons)
-    buttons.accepted.connect(dlg.accept)
-    buttons.rejected.connect(dlg.reject)
-
-    while True:
-        result = dlg.exec()
-        if result != QDialog.Accepted:
-            return None
-
-        # Collect selected rule files
-        selected: List[Path] = []
-        for i in range(list_widget.count()):
-            item = list_widget.item(i)
-            if item.checkState() == Qt.Checked:
-                # rule_files list indices align with list_widget items
-                selected.append(rule_files[i])
-
-        if not selected:
-            # Require at least one rule file
-            try:
-                from aqt.utils import tooltip  # type: ignore
-                tooltip("Batch F&R: please select at least one rule file.", period=3000)
-            except Exception:
-                pass
-            # Loop back to dialog
-            continue
-
-        dry_run = bool(dry_radio.isChecked())
-        return {
-            "dry_run": dry_run,
-            "rules_files": selected,
-        }
-
-def _prompt_batch_fr_mode(parent) -> Optional[bool]:
-    """
-    Show a modal dialog asking how to run Batch Find & Replace.
-
-    Returns:
-        True  -> Dry run (no changes)
-        False -> Apply changes (live)
-        None  -> User cancelled
-    """
-    try:
-        from aqt.qt import QMessageBox  # type: ignore
-    except Exception:
-        # If Qt is not available for some reason, fall back to cancel.
-        return None
-
-    box = QMessageBox(parent)
-    box.setWindowTitle("Batch Find & Replace — Choose Mode")
-    box.setText("How would you like to run Batch Find & Replace?")
-
-    dry_btn = box.addButton("Dry Run (no changes)", QMessageBox.AcceptRole)
-    live_btn = box.addButton("Apply Changes", QMessageBox.DestructiveRole)
-    cancel_btn = box.addButton(QMessageBox.Cancel)
-
-    box.exec()
-    clicked = box.clickedButton()
-
-    if clicked is cancel_btn:
-        return None
-    if clicked is dry_btn:
-        return True
-    if clicked is live_btn:
-        return False
-
-    # Fallback: treat anything unexpected as cancel.
-    return None
-
 def run_from_toolbar() -> None:
     """
     Convenience launcher for wiring to a toolbar/menu action.
@@ -492,6 +105,7 @@ def run_from_toolbar() -> None:
     debug_cfg = cfg.get("batch_fr_debug", {}) or {}
 
     # Discover rule files under the configured rules_path
+    rules_root = _get_rules_root(cfg)
     rule_files = _discover_rule_files(cfg)
     if not rule_files:
         try:
@@ -502,7 +116,7 @@ def run_from_toolbar() -> None:
         return
 
     # Ask the user which rule files to run and whether to run as dry run or live
-    opts = _prompt_batch_fr_run_options(mw, rule_files)
+    opts = _prompt_batch_fr_run_options(mw, rule_files, rules_root)
     if opts is None:
         # User cancelled
         try:

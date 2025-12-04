@@ -1,4 +1,0 @@
-<(b|i|u|(?:span))></(b|i|u|(?:span))>
-\n+
-<span style=\"font-size: 10pt;\">
-<span[^>]+?></span>
