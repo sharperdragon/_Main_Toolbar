@@ -1,17 +1,14 @@
 from __future__ import annotations
-
-# * Standard library
 from pathlib import Path
 from typing import List, Union, Optional, Dict, Any
 
-# * Anki/Qt – optional at import time to keep unit tests simple
+
 try:  # pragma: no cover
     from aqt import mw  # type: ignore
 except Exception:  # pragma: no cover
     mw = None  # Allow import outside Anki (e.g., tests)
 
-# * Deferred import of the implementation to avoid hard dependency during load
-#   The implementation file lives next to this shim as: engine.py
+
 try:
     from .utils.engine import run_batch_find_replace as _impl_run_batch_find_replace  # type: ignore
 except Exception as _e:  # pragma: no cover
@@ -20,25 +17,14 @@ except Exception as _e:  # pragma: no cover
 else:
     _IMPORT_ERROR = None
 
-# * Shared utilities moved into top_utils.py
-from .top_utils import (
-    TS_FORMAT,
-    DESKTOP,
+
+from .utils.top_helper import (
     now_stamp,
     load_batch_fr_config,
     _get_rules_root,
     _discover_rule_files,
-    _prompt_batch_fr_run_options,
 )
-
-__all__ = [
-    "TS_FORMAT",
-    "DESKTOP",
-    "now_stamp",
-    "load_batch_fr_config",
-    "run_batch_find_replace",
-    "run_from_toolbar",
-]
+from .gui.ui_dialog import prompt_batch_fr_run_options as _prompt_batch_fr_run_options
 
 # -----------------------------
 # Public API wrapper (engine)
@@ -50,24 +36,24 @@ def run_batch_find_replace(
     field_remove_rules: Optional[Union[str, Path]] = None,
     config_path: Optional[Union[str, Path]] = None,
     dry_run: Optional[bool] = None,
+    extensive_debug: Optional[bool] = None,
     show_progress: bool = True,
     notes_limit: Optional[int] = None,
     rules_files: Optional[List[Union[str, Path]]] = None,
 ) -> Dict[str, Any]:
     """
     Public entry point used by host modules.
-
-    - mw_ref: aqt.mw (Anki main window) or a reference providing .col
-    - rulesets: list of rule file paths OR already-loaded rule dicts
-    - remove_rules / field_remove_rules: optional pattern files
-    - config_path: path to modules_config.json; if None, default from top_utils is used
-    - dry_run: override DRY_RUN if provided (engine decides default)
-    - show_progress: show a cancellable QProgressDialog
-    - notes_limit: limit processed notes (useful for quick tests)
-
-    Returns a dict report (paths, counters, summaries).
+    ...
     """
+    # If no config_path is provided, use the main modules_config.json
+    if config_path is None:
+        config_path = Path(__file__).resolve().parent.parent / "modules_config.json"
+
     cfg = load_batch_fr_config(config_path)
+
+    if extensive_debug is not None:
+        # existing code...
+        cfg["extensive_debug"] = bool(extensive_debug)
 
     if _impl_run_batch_find_replace is None:  # pragma: no cover
         # ! Implementation not present – provide actionable guidance
@@ -87,7 +73,6 @@ def run_batch_find_replace(
         notes_limit=notes_limit,
         rules_files=rules_files,
     )
-
 
 # ------------------------------
 # Toolbar entrypoint
@@ -127,6 +112,7 @@ def run_from_toolbar() -> None:
         return
 
     dry_run = bool(opts.get("dry_run", True))
+    extensive_debug = bool(opts.get("extensive_debug", False))
     selected_files: List[Path] = opts.get("rules_files", []) or []
     if not selected_files:
         # Defensive: nothing selected, treat as cancelled.
@@ -146,6 +132,7 @@ def run_from_toolbar() -> None:
             rulesets=[],
             config_path=None,
             dry_run=dry_run,
+            extensive_debug=extensive_debug,
             show_progress=True,
             notes_limit=None,
             rules_files=selected_files,
@@ -237,3 +224,22 @@ def run_from_toolbar() -> None:
     except Exception:
         # Best-effort only; never let this break the main run.
         pass
+
+# 01-46_12-06 – expose batch_FR dialogs for tools like AnkiWebView Inspector
+try:
+    import types  # type: ignore[import-not-found]
+    import aqt  # type: ignore[import-not-found]
+
+    from .gui import ui_dialog as _batch_fr_ui_dialog
+
+    ns = getattr(aqt, "batch_FR", None)
+    if ns is None:
+        ns = types.SimpleNamespace()
+        aqt.batch_FR = ns
+
+    # * Attach the gui.ui_dialog module so tools can reach:
+    #   aqt.batch_FR.ui_dialog.BatchFRHtmlDialog, etc.
+    ns.ui_dialog = _batch_fr_ui_dialog
+except Exception:
+    # Best-effort only; never break normal imports if aqt/types are missing.
+    pass

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Batch FR Rules</title>
+
+<style>
+{{ rules_style }}
+{{ favs_style }}
+</style>
+</head>
+<body>
+  <div id="app">
+    <div id="header">
+      Choose rule groups and files to run, then select a run mode.
+    </div>
+
+    <div id="main">
+      <!-- Top row: left = groups, right = files -->
+      <div id="top-row">
+        <aside id="groups-panel">
+          <div id="groups-header">
+            <h3>Groups</h3>
+            <button id="favorites-btn" title="Manage favorites">Favorites</button>
+          </div>
+          <div id="groups-list"></div>
+        </aside>
+
+        <section id="files-panel">
+          <div id="toolbar">
+            <input id="filter" type="text" placeholder="Filter by name or alias…" />
+            <button id="select-all">Select all</button>
+            <button id="select-none">Select none</button>
+          </div>
+
+          <div id="files-container"></div>
+        </section>
+      </div>
+
+      <!-- Bottom row: preview panel spanning full width -->
+      <aside id="preview-panel">
+        <h3>Preview</h3>
+        <pre id="rule-preview"> Select a rule file to preview it here. </pre>
+      </aside>
+      <div id="status-line"></div>
+    </div>
+
+    <!-- Favorites modal -->
+    <div id="favorites-modal" class="favorites-modal hidden">
+      <div class="favorites-backdrop"></div>
+      <div class="favorites-panel">
+        <div class="favorites-header">
+          <span class="favorites-title">Manage favorites</span>
+          <button class="favorites-close" id="favorites-close-btn">✕</button>
+        </div>
+        <div class="favorites-body">
+          <!-- Top: filter input for quickly narrowing visible items -->
+          <div class="favorites-filter-row">
+            <input
+              id="favorites-filter"
+              type="text"
+              placeholder="Filter files…"/>
+          </div>
+
+          <!-- Dual-pane layout: left = available items, right = favorites -->
+          <div class="favorites-layout">
+            <!-- Left: available items -->
+            <section class="favorites-items-panel" aria-label="Available items">
+              <div class="favorites-items-header">Available items</div>
+              <ul
+                class="favorites-list"
+                id="favorites-available-list">
+                <!-- Populated dynamically from JS -->
+              </ul>
+            </section>
+
+            <!-- Middle: move controls -->
+            <div class="favorites-controls">
+              <button
+                type="button"
+                class="move-item-button primary"
+                id="favorites-btn-add"
+                title="Add selected item to favorites (move left → right)">≫</button>
+
+              <button
+                type="button"
+                class="move-item-button"
+                id="favorites-btn-remove"
+                title="Remove selected item from favorites (move right → left)">≪</button>
+            </div>
+
+            <!-- Right: favorites -->
+            <section class="favorites-items-panel" aria-label="Favorites">
+              <div class="favorites-items-header">Favorites</div>
+              <ul
+                class="favorites-list"
+                id="favorites-selected-list">
+                <!-- Populated dynamically from JS -->
+              </ul>
+            </section>
+          </div>
+        </div>
+        <div class="favorites-footer">
+          <button id="favorites-cancel">Cancel</button>
+          <button id="favorites-save">Save</button>
+        </div>
+      </div>
+    </div>
+
+  <div id="footer">
+    <label><input type="radio" name="mode" value="dry" checked /> Dry run</label>
+    <label><input type="radio" name="mode" value="live" /> Apply changes</label>
+    <label style="margin-left: 1.5em;">
+      <input type="checkbox" id="extensive-debug" />Extensive debugging</label>
+    <span class="spacer"></span>
+    <button id="cancel-btn">Cancel</button>
+    <button id="ok-btn">Run</button>
+  </div>
+
+  <!-- JS will be inlined by the Python builder -->
+  <script>
+  {{ rules_script }}
+  </script>
+</body>
+</html>

@@ -1,5 +1,4 @@
 from __future__ import annotations
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 import re
@@ -34,38 +33,13 @@ from datetime import datetime
 
 __all__ = ["run_batch_find_replace"]
 
-TS_FORMAT: str = "%H-%M_%m-%d"
-
-# =========================
-# Config + Rule structures
-# =========================
-@dataclass
-class RunConfig:
-    ts_format: str
-    log_dir: str
-    rules_path: str
-    fields_all: List[str]
-    defaults: Dict[str, Any]
-    remove_config: Dict[str, Any]
-    log_mode: str
-    include_unchanged: bool
-    max_loops: int
-    order_preference: Dict[str, Any]
-
-@dataclass
-class Rule:
-    query: Union[str, List[str]]
-    exclude_query: Union[str, List[str], None]
-    pattern: Union[str, List[str]]
-    replacement: str
-    regex: bool
-    flags: Union[str, int]
-    fields: List[str]
-    loop: bool
-    delete_chars: Dict[str, Any]
-    # Provenance fields
-    source_file: Optional[str] = None
-    source_index: Optional[int] = None
+from .FR_global_utils import (
+    Rule, RunConfig,
+    TS_FORMAT,
+    _coerce_int,
+    _norm_path,
+    
+)
 
 # =========================
 # Public entrypoint
@@ -90,6 +64,12 @@ def run_batch_find_replace(
     """
     cfg = _coerce_run_config(config_snapshot)
     dry = bool(dry_run) if dry_run is not None else False
+    # * Extensive debugging: optional heavy logging mode controlled by UI/config
+    extensive_debug = bool(config_snapshot.get("extensive_debug", False))
+    try:
+        extensive_debug_max_examples = int(config_snapshot.get("extensive_debug_max_examples", 60))
+    except Exception:
+        extensive_debug_max_examples = 60
 
     # ! Dedicated loop cap for remove rules (can be overridden via remove_config.max_loops)
     remove_cfg = getattr(cfg, "remove_config", {}) or {}
@@ -191,6 +171,9 @@ def run_batch_find_replace(
         report["rules_files_used"] = None
     report["invalid_rules"] = invalid_rules
     report["dry_run"] = dry
+    # * Surface extensive-debug settings in the in-memory report for downstream loggers
+    report["extensive_debug"] = extensive_debug
+    report["extensive_debug_max_examples"] = extensive_debug_max_examples
 
     for idx, rule in enumerate(ready, start=1):
         per = _init_per_rule(rule, idx)
@@ -330,6 +313,9 @@ def run_batch_find_replace(
 
     # 7) Optional markdown debug files
     debug_cfg = dict(config_snapshot.get("batch_fr_debug", {}) or {})
+    if extensive_debug:
+        # * In extensive-debug mode, allow more examples per rule (default 60)
+        debug_cfg.setdefault("max_examples_per_rule", extensive_debug_max_examples)
     debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
     if debug_path is not None:
         report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
@@ -344,9 +330,21 @@ def run_batch_find_replace(
 # Internals
 # =========================
 def _coerce_run_config(d: Dict[str, Any]) -> RunConfig:
+    """
+    * Coerce a plain dict snapshot into a RunConfig.
+    - Normalizes log_dir so it can safely be a Path or string.
+    """
+    raw_log_dir = d.get("log_dir", "")
+    if isinstance(raw_log_dir, Path):
+        log_dir_val = raw_log_dir
+    else:
+        # * Allow downstream helpers (and config) to use either a raw string
+        # * or a normalized path; empty stays empty.
+        log_dir_val = _norm_path(raw_log_dir) if raw_log_dir else ""
+
     return RunConfig(
         ts_format=d.get("ts_format", TS_FORMAT),
-        log_dir=d.get("log_dir", ""),
+        log_dir=log_dir_val,
         rules_path=d.get("rules_path", ""),
         fields_all=list(d.get("fields_all", [])),
         defaults=dict(d.get("defaults", {})),
@@ -494,9 +492,13 @@ def _guard_exceeded(rule: Rule, before: str, after: str) -> bool:
 def _init_report(cfg: RunConfig) -> Dict[str, Any]:
     return {
         "ts_format": cfg.ts_format,
-        "log_dir": cfg.log_dir,
+        # * Store log_dir as a string in the report for stable markdown rendering
+        "log_dir": str(cfg.log_dir),
+        # * Extensive-debug settings (may be overridden later from config_snapshot)
+        "extensive_debug": getattr(cfg, "extensive_debug", False),
+        "extensive_debug_max_examples": getattr(cfg, "extensive_debug_max_examples", 60),
         "rules": 0,
-        "notes_touched": 0,
+        "notes_touched": 0,        # notes matched by rules
         "notes_changed": 0,        # actual commits
         "notes_would_change": 0,   # simulated changes (esp. DRY_RUN)
         "guard_skips": 0,
@@ -512,7 +514,10 @@ def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
         file_name = str(raw_src) if raw_src else ""
     return {
         "index": idx,
+        # * Short name for backward-compatible displays
         "file": file_name,
+        # * Full source path preserved for group-aware logging
+        "source_file": str(raw_src) if raw_src else "",
         "source_index": getattr(rule, "source_index", None),
         "query": _effective_query(rule),
         "exclude": rule.exclude_query,

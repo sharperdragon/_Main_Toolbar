@@ -1,0 +1,361 @@
+/* Layout & base typography */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f5f7;
+  color: #222;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Header band */
+#header {
+  padding: 8px 30px;
+  font-size: 10px;
+  background: #e6e9f0;
+  border-bottom: 1px solid #d0d4dd;
+}
+
+/* Main layout: top row + bottom files panel */
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0 1px 0px 1px;
+  box-sizing: border-box;
+  gap: 0px;
+  overflow: hidden;
+}
+
+/* Top row: groups on the left, preview on the right */
+#top-row {
+  flex: 1 1 0;
+  display: flex;
+  gap: 0px;
+  min-height: 0;
+  background: #fafafa;
+}
+
+/* Left: group checkboxes */
+#groups-panel {
+  width: auto;
+  min-width: 190px;
+  max-width: max-content;
+  background: #f9fafc;
+  padding: 8px 12px 4px 0px;
+  border-right: 0.1px lightgrey;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+#groups-header {
+  display: flex;
+  align-items: center;
+  /* vertical centering for h3 + button */
+  justify-content: space-between;
+  gap: 4px;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid lightgray;
+}
+
+#groups-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.035em;
+  color: #555;
+  padding-left: 11px;
+}
+
+#groups-list {
+  padding-left: 6px;
+  background-color: #fff;
+  height: 83%;
+  padding-bottom: 2px;
+  border-bottom-right-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+#favorites-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#favorites-btn:hover {
+  background: #e2e7f3;
+}
+
+
+.group-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.group-item input[type="checkbox"] {
+  margin-right: 6px;
+}
+
+/* Right: toolbar + files */
+#files-panel {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #fff;
+}
+
+/* Toolbar row */
+#toolbar {
+  display: flex;
+  align-items: center;
+  margin: 2px 6px 5px 10px;
+  gap: 4px;
+}
+
+#filter {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #fff;
+}
+
+#toolbar button {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: #e2e7f3;
+}
+
+/* File list container */
+#files-container {
+  flex: 1;
+  border: 1px solid #d0d4dd;
+  border-radius: 4px;
+  background: #fff;
+  overflow: auto;
+  padding: 6px 16px 0px 6px;
+  box-sizing: border-box;
+  font-size: 11px;
+}
+
+/* Group section (collapsible) */
+.file-group {
+  margin-bottom: 2px;
+  border-radius: 4px;
+}
+
+/* Group header with caret */
+.file-group-header {
+  display: flex;
+  align-items: center;
+  padding: 2px 0px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #555;
+  cursor: pointer;
+}
+
+.file-group-header:hover {
+  background-color: #e4ebfa;
+}
+
+/* Body that holds rule rows, with gutter */
+.file-group-body {
+  padding-left: 1px;
+  margin-left: 11px;
+  border-left: 1.5px solid #dfe8ff;
+}
+
+/* Nested subfolders inside a file-group */
+.file-subfolder {
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
+.file-subfolder-header {
+  display: flex;
+  align-items: center;
+  padding: 1px 0;
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #666;
+  cursor: pointer;
+}
+
+.file-subfolder-header:hover {
+  background-color: #edf2ff;
+}
+
+.file-subfolder-body {
+  margin-left: 14px;
+  padding-left: 4px;
+  border-left: 1px solid #dfe8ff;
+}
+
+.file-subfolder-label {
+  margin-left: 2px;
+}
+
+/* Caret styling (based on your other addon) */
+.hy-caret {
+  display: inline-block;
+  font-size: 130%;
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  user-select: none;
+  color: #1272c9;
+  margin-right: 4px;
+  background-color: transparent;
+}
+
+/* Individual rule rows */
+.file-item {
+  display: flex;
+  align-items: center;
+  padding: 2px 2px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.file-item:hover {
+  background: #f2f5fb;
+}
+
+.file-item input[type="checkbox"] {
+  margin-right: 6px;
+}
+
+.file-label-main {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+
+.file-label-alias {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #777;
+  white-space: nowrap;
+}
+
+.file-item.selected {
+  background: #dde6ff;
+}
+
+/* Status line under list */
+#status-line {
+  margin-top: 1px;
+  font-size: 7px;
+  color: #a4a2a2;
+  min-height: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Footer: run mode + buttons */
+#footer {
+  padding: 6px 8px 0px 8px;
+  border-top: 1px solid #d0d4dd;
+  background: #f0f2f7;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  gap: 8px;
+}
+
+#footer .spacer {
+  flex: 1;
+}
+
+#footer button {
+  font-size: 14px;
+  padding: 4px 14px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+}
+
+#footer button#ok-btn {
+  background: #4c78ff;
+  border-color: #3b63dd;
+  color: #fff;
+  padding: 4px 19px;
+}
+
+#footer button#ok-btn:hover {
+  background: #3b63dd;
+}
+
+#footer button#cancel-btn:hover {
+  background: #e2e7f3;
+}
+
+#preview-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  border-left: 1px solid #ccc;
+  padding-left: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: scroll;
+}
+
+#preview-panel h3 {
+  margin: 5px 0 2px 10px;
+  font-size: 12px;
+}
+
+#rule-preview {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 8px;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: auto;
+  background: #fafafa;
+}
+
+.hidden {
+  display: none !important;
+}
+

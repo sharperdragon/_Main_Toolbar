@@ -1,6 +1,6 @@
 {
   "global_config": {
-    "log_dir": "~/Desktop/anki logs/Main_toolbar",
+    "log_dir": "~/Desktop/anki_logs/Main_toolbar",
     "ts_format": "%H-%M_%m-%d"
   },
   "batch_FR_config": {

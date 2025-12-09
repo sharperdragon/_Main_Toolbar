@@ -1,0 +1,215 @@
+/* Favorites modal */
+.favorites-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.favorites-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.favorites-panel {
+  position: relative;
+  z-index: 1;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px solid #c3cad8;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  box-sizing: border-box;
+  width: auto;
+  max-width: 90vw;
+  min-width: max-content;
+}
+
+.favorites-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.favorites-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.favorites-close {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+}
+
+.favorites-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+  overflow-y: scroll;
+  min-height: 420px;
+}
+
+.favorites-filter-row {
+  flex: 0 0 auto;
+}
+
+#favorites-filter {
+  width: 100%;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  box-sizing: border-box;
+}
+
+.favorites-layout {
+  /* * Layout previously inlined on the container */
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+  min-height: 220px;
+  /* * Allow columns to grow wider based on content */
+  width: 100%;
+  column-gap: 2px;
+}
+
+.favorites-items-panel {
+  flex: 1 1 0;
+  min-width: min-content;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d0d4dd;
+  border-radius: 6px;
+  padding: 0.5rem;
+  box-sizing: border-box;
+  background: #fafbff;
+}
+
+.favorites-items-header {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+  color: #444b5a;
+}
+
+.favorites-list {
+  flex: 1 1 auto;
+  border: 1px solid #d0d4dd;
+  border-radius: 4px;
+  background: #ffffff;
+  padding: 0.25rem;
+  margin: 0;
+  list-style: none;
+  /* * Vertical scroll only when needed; no horizontal scroll bar */
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-size: 0.85rem;
+  box-sizing: border-box;
+}
+
+.favorites-item {
+  padding: 0.3rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  /* ! Allow long file names to wrap onto multiple lines */
+  white-space: normal;
+  width: 100%;
+  /* * Hide any weird overflow but avoid horizontal scrollbars */
+  overflow: hidden;
+  font-size: 0.86rem;
+}
+
+.favorites-item:hover {
+  background: #eef2ff;
+}
+
+.favorites-item.is-selected {
+  background: #dbe4ff;
+  border: 1px solid #b5c4ff;
+}
+
+.favorites-controls {
+  flex: 0 0 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.move-item-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #c9cfdd;
+  background: #f3f5ff;
+  font-size: 115%;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.05s ease, box-shadow 0.1s ease;
+}
+
+button#favorites-save {
+    padding: 3px 21px;
+    background: #6c91e945;
+}
+
+
+.move-item-button:disabled {
+  opacity: 0.8;
+  cursor: default;
+  box-shadow: none;
+  transform: none;
+}
+
+.move-item-button:hover:not(:disabled) {
+  background: #e2e7ff;
+  box-shadow: 0 0 0 1px #c2ccff;
+}
+
+.move-item-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.move-item-button.primary {
+  font-weight: 600;
+}
+
+/* Favorites footer */
+.favorites-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.favorites-footer button {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+}
+
+
+.favorites-footer #favorites-save:hover {
+    background: #0093ff61;
+}
+.favorites-footer #favorites-cancel:hover {
+    background: #efa2a249;
+}

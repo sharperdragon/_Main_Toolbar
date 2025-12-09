@@ -9,6 +9,8 @@ import time
 from typing import Optional, Iterable, List, Dict, Any
 from collections import defaultdict
 from ...log_cleanup import delete_old_anki_log_files
+from .FR_global_utils import now_stamp
+
 
 # --- Internal helpers for human-friendly previews ---------------------------
 
@@ -36,6 +38,7 @@ def format_field_re_clause_preview(field: str, display_pat: str) -> str:
 
 
 # --- Rule provenance helper (for logs/reports) -------------------------------
+
 def rule_prov(rule: dict) -> str:
     try:
         src = Path(str(rule.get("__source_file") or "")).name
@@ -45,6 +48,42 @@ def rule_prov(rule: dict) -> str:
     nm = (rule.get("name") or "").strip()
     base = f"[{src}#{idx}]" if idx is not None else (f"[{src}]" if src else "[?]")
     return f"{base} {nm}" if nm else base
+
+
+# --- Helper: group-aware label for rule file sources ---
+def _log_rule_group_and_name(raw_src: Any, rules_root: Path | None) -> tuple[str, str, str]:
+    """
+    Return (group, file_name, display_label) for a rule source.
+
+    - group: first folder under rules_root, or "" if not applicable
+    - file_name: basename of the file
+    - display_label: "[group] file_name" if group present, else "file_name"
+    """
+    if not raw_src:
+        return "", "", "<?>"
+
+    try:
+        p = Path(str(raw_src)).expanduser().resolve()
+    except Exception:
+        s = str(raw_src)
+        s = s or "<?>"
+        return "", s, s
+
+    file_name = p.name or "<?>"
+
+    if rules_root is None:
+        return "", file_name, file_name
+
+    try:
+        rel = p.relative_to(rules_root)
+        parts = rel.parts
+        if len(parts) > 1:
+            group = parts[0]
+            return group, file_name, f"[{group}] {file_name}"
+    except Exception:
+        pass
+
+    return "", file_name, file_name
 
 
 def build_field_or_query_preview(pattern: str, fields: list[str] | None) -> str:
@@ -169,6 +208,96 @@ def _format_error_html(err: Any, escape_pipes: bool = False) -> str:
     return f'<span style="color:#ff2d00;font-weight:600">{text}</span>'
 
 
+def _slug_for_filename(label: str) -> str:
+    """
+    * Produce a filesystem-friendly slug for a rule-file label.
+    - Keeps alphanumerics, underscore, dash, and dot; everything else -> '_'.
+    """
+    s = str(label or "").strip()
+    if not s:
+        return "file"
+    s = re.sub(r"[^\w\-.]+", "_", s)
+    # Keep it reasonably short to avoid path issues
+    return s[:64] or "file"
+
+
+def _write_per_file_debug_logs(
+    out_dir: Path,
+    ts: str,
+    rules_root: Path | None,
+    per_rules: List[Dict[str, Any]],
+    dry: bool,
+    max_per_file: int,
+) -> None:
+    """
+    * When extensive debugging is enabled, emit one markdown file per rule source file.
+    - Each file shows up to `max_per_file` edited note fields (examples) aggregated across rules.
+    """
+    try:
+        if max_per_file <= 0:
+            return
+        # Collect examples by rule-file label
+        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for per in per_rules:
+            examples = list(per.get("examples") or [])
+            if not examples:
+                continue
+            raw_src = per.get("source_file") or per.get("file") or ""
+            _, _, label = _log_rule_group_and_name(raw_src, rules_root)
+            if not label:
+                label = "<?>"
+            current = grouped[label]
+            for ex in examples:
+                if len(current) >= max_per_file:
+                    break
+                current.append({"rule_index": per.get("index", "?"), "example": ex})
+
+        for label, items in grouped.items():
+            if not items:
+                continue
+            slug = _slug_for_filename(label)
+            filename = f"Batch_FR_File_Debug__{slug}__{ts}.md"
+            out_path = out_dir / filename
+
+            lines: List[str] = []
+            lines.append(f"# Batch Find & Replace File Debug — {label} — {ts}")
+            lines.append("")
+            lines.append(
+                "This log shows example note fields edited by rules sourced from this file."
+            )
+            lines.append("")
+            lines.append("| rule | field | BEFORE | AFTER |")
+            lines.append("|---|---|---|---|")
+
+            for item in items:
+                idx = item.get("rule_index", "?")
+                ex = item.get("example", {}) or {}
+                fld = ex.get("field", "")
+                before_raw = str(ex.get("before", ""))
+                after_raw = str(ex.get("after", ""))
+                if dry:
+                    before_disp, after_disp = _highlight_diff_snippet(
+                        before_raw, after_raw, max_len=240
+                    )
+                else:
+                    before_disp, after_disp = before_raw, after_raw
+
+                # Keep markdown tables intact by escaping pipes in the content
+                before_disp = before_disp.replace("|", "\\|")
+                after_disp = after_disp.replace("|", "\\|")
+                fld_disp = str(fld).replace("|", "\\|")
+
+                lines.append(
+                    f"| {idx} | `{fld_disp}` | `{before_disp}` | `{after_disp}` |"
+                )
+
+            out_text = "\n".join(lines) + "\n"
+            out_path.write_text(out_text, encoding="utf-8")
+    except Exception:
+        # Debug helper: failures here should not break the main debug log.
+        return
+
+
 def write_batch_fr_debug(
     report: Dict[str, Any],
     cfg: Any,
@@ -188,9 +317,11 @@ def write_batch_fr_debug(
         ts_fmt = getattr(cfg, "ts_format", None) or report.get("ts_format") or "%H-%M_%m-%d"
         ts = datetime.now().strftime(ts_fmt)
 
-        log_dir = getattr(cfg, "log_dir", None) or report.get("log_dir") or "."
-        out_dir = Path(log_dir)
+        # Normalize / resolve log_dir; cfg.log_dir may already be a Path
+        raw_log_dir = getattr(cfg, "log_dir", None) or report.get("log_dir") or "."
+        out_dir = Path(raw_log_dir).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
+        log_dir_str = str(out_dir)
 
         filename = f"Batch_FR_Debug__{ts}.md"
         out_path = out_dir / filename
@@ -214,18 +345,38 @@ def write_batch_fr_debug(
         lines.append("## Settings")
         dry = report.get("dry_run", False)
         lines.append(f"- DRY_RUN: {dry}")
-        lines.append(f"- log_dir: `{log_dir}`")
-        rules_path = getattr(cfg, "rules_path", "")
+        lines.append(f"- log_dir: `{log_dir_str}`")
+        extensive = bool(report.get("extensive_debug", False))
+        try:
+            extensive_max = int(report.get("extensive_debug_max_examples", max_examples))
+        except Exception:
+            extensive_max = max_examples
+        lines.append(f"- extensive_debug: {extensive}")
+        lines.append(f"- extensive_debug_max_examples: {extensive_max}")
+        rules_path = getattr(cfg, "rules_path", "") or ""
         lines.append(f"- rules_path: `{rules_path}`")
+
+        # Derive a rules_root Path for group-aware displays
+        rules_root = None
+        try:
+            if rules_path:
+                rules_root = Path(str(rules_path)).expanduser().resolve()
+        except Exception:
+            rules_root = None
+
         rules_files_used = report.get("rules_files_used")
         if isinstance(rules_files_used, (list, tuple)) and rules_files_used:
             lines.append(f"- rule_files_used ({len(rules_files_used)}):")
-            for rf in sorted(rules_files_used, key=lambda p: Path(str(p)).name.lower()):
+
+            def _rule_file_sort_key(p: Any) -> str:
                 try:
-                    name = Path(str(rf)).name
+                    return Path(str(p)).name.lower()
                 except Exception:
-                    name = str(rf)
-                lines.append(f"  - `{name}`")
+                    return str(p).lower()
+
+            for rf in sorted(rules_files_used, key=_rule_file_sort_key):
+                _, _, label = _log_rule_group_and_name(rf, rules_root)
+                lines.append(f"  - `{label}`")
         else:
             lines.append("- rule_files_used: (all discovered under rules_path)")
         lines.append(f"- log_mode: `{getattr(cfg, 'log_mode', '')}`")
@@ -268,17 +419,14 @@ def write_batch_fr_debug(
                 rep = str(rule.get("replacement", ""))
 
                 raw_src = rule.get("__source_file") or ""
-                try:
-                    fname = Path(str(raw_src)).name if raw_src else ""
-                except Exception:
-                    fname = str(raw_src) if raw_src else ""
-                if not fname:
-                    fname = "<?>"
+                _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
+                if not label:
+                    label = "<?>"
 
                 err_disp = _format_error_html(err, escape_pipes=True)
                 pat_disp = str(pat).replace("|", "\\|")
                 rep_disp = str(rep).replace("|", "\\|")
-                lines.append(f"| {idx} | `{fname}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |")
+                lines.append(f"| {idx} | `{label}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |")
         lines.append("")
 
         # Per-rule details table
@@ -286,23 +434,20 @@ def write_batch_fr_debug(
         if not per_rules:
             lines.append("_No rules were executed._")
         else:
-            # Group rules by source file for clearer organization
+            # Group rules by source file for clearer organization (group-aware)
             grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
             for per in per_rules:
-                raw_src = per.get("file") or per.get("source_file") or ""
-                try:
-                    fname = Path(str(raw_src)).name if raw_src else ""
-                except Exception:
-                    fname = str(raw_src) if raw_src else ""
-                if not fname:
-                    fname = "<?>"
-                grouped[fname].append(per)
+                raw_src = per.get("source_file") or per.get("file") or ""
+                _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
+                if not label:
+                    label = "<?>"
+                grouped[label].append(per)
 
-            # Table 1: core numeric stats, grouped by file
-            for fname in sorted(grouped.keys(), key=str.lower):
-                rules_for_file = grouped[fname]
+            # Table 1: core numeric stats, grouped by file (and folder)
+            for label in sorted(grouped.keys(), key=str.lower):
+                rules_for_file = grouped[label]
                 lines.append("")
-                lines.append(f"### {fname}")
+                lines.append(f"### {label}")
                 lines.append("")
                 if dry:
                     lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_used | rm_max_loops |")
@@ -345,20 +490,17 @@ def write_batch_fr_debug(
                 pat = per.get("pattern", "")
                 rep = per.get("replacement", "")
 
-                raw_src = per.get("file") or per.get("source_file") or ""
-                try:
-                    fname = Path(str(raw_src)).name if raw_src else ""
-                except Exception:
-                    fname = str(raw_src) if raw_src else ""
-                if not fname:
-                    fname = "<?>"
+                raw_src = per.get("source_file") or per.get("file") or ""
+                _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
+                if not label:
+                    label = "<?>"
 
                 # Escape pipes so the Markdown table doesn't break
                 err_disp = _format_error_html(err, escape_pipes=True)
                 pat_disp = str(pat).replace("|", "\\|")
                 rep_disp = str(rep).replace("|", "\\|")
                 lines.append(
-                    f"| {idx} | `{fname}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |"
+                    f"| {idx} | `{label}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |"
                 )
         lines.append("")
 
@@ -403,6 +545,23 @@ def write_batch_fr_debug(
         if not any_examples:
             lines.append("")
             lines.append("_No examples were recorded for this run._")
+
+        # If extensive debugging is enabled, emit per-file logs with up to N examples each.
+        extensive = bool(report.get("extensive_debug", False))
+        if extensive:
+            try:
+                max_per_file = int(report.get("extensive_debug_max_examples", max_examples))
+            except Exception:
+                max_per_file = max_examples
+            if max_per_file > 0:
+                _write_per_file_debug_logs(
+                    out_dir=out_dir,
+                    ts=ts,
+                    rules_root=rules_root,
+                    per_rules=per_rules,
+                    dry=dry,
+                    max_per_file=max_per_file,
+                )
 
         out_text = "\n".join(lines) + "\n"
         out_path.write_text(out_text, encoding="utf-8")
@@ -451,9 +610,11 @@ def write_regex_debug(
         ts_fmt = getattr(cfg, "ts_format", None) or report.get("ts_format") or "%H-%M_%m-%d"
         ts = datetime.now().strftime(ts_fmt)
 
-        log_dir = getattr(cfg, "log_dir", None) or report.get("log_dir") or "."
-        out_dir = Path(log_dir)
+        # Normalize / resolve log_dir; cfg.log_dir may already be a Path
+        raw_log_dir = getattr(cfg, "log_dir", None) or report.get("log_dir") or "."
+        out_dir = Path(raw_log_dir).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
+        log_dir_str = str(out_dir)
 
         filename = f"Regex_Debug__{ts}.md"
         out_path = out_dir / filename
@@ -463,6 +624,14 @@ def write_regex_debug(
 
         per_rules = list(report.get("per_rule") or [])[:max_rules]
         invalid_rules = list(report.get("invalid_rules") or [])
+
+        rules_path = getattr(cfg, "rules_path", "") or ""
+        rules_root = None
+        try:
+            if rules_path:
+                rules_root = Path(str(rules_path)).expanduser().resolve()
+        except Exception:
+            rules_root = None
 
         # --- Helper: decide if a per-rule record is "regex-like" -------------
         def _is_regex_rule(per: Dict[str, Any]) -> bool:
@@ -499,12 +668,24 @@ def write_regex_debug(
         lines.append("## Sources")
         rule_files_used = report.get("rules_files_used") or []
         lines.append(f"- Rule files: {len(rule_files_used)}")
+        if rule_files_used:
+            def _rule_file_sort_key(p: Any) -> str:
+                try:
+                    return Path(str(p)).name.lower()
+                except Exception:
+                    return str(p).lower()
+
+            lines.append("")
+            lines.append("  - Files:")
+            for rf in sorted(rule_files_used, key=_rule_file_sort_key):
+                _, _, label = _log_rule_group_and_name(rf, rules_root)
+                lines.append(f"    - `{label}`")
         lines.append("")
 
         dry = report.get("dry_run", False)
         lines.append("## Settings")
         lines.append(f"- DRY_RUN (this run): {dry}")
-        lines.append(f"- log_dir: `{log_dir}`")
+        lines.append(f"- log_dir: `{log_dir_str}`")
         lines.append(f"- ts_format: `{ts_fmt}`")
         lines.append("")
 
@@ -537,12 +718,8 @@ def write_regex_debug(
         lines.append("|---:|--------|---------|--------:|-------|---------|-------------|")
 
         def _rule_source_name(raw_src: Any) -> str:
-            if not raw_src:
-                return ""
-            try:
-                return Path(str(raw_src)).name
-            except Exception:
-                return str(raw_src)
+            _, _, label = _log_rule_group_and_name(raw_src, rules_root)
+            return label
 
         # Valid regex rules
         for per in regex_rules:

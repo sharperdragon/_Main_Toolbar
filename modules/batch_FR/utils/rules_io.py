@@ -23,7 +23,6 @@ __all__ = [
     "strip_comments",
     "read_text",
     "json_load",
-    # new helpers
     "json_load_relaxed",
     "iter_jsonl",
     "sort_paths_by_preference",
