@@ -1,0 +1,47 @@
+[
+{
+    "pattern": "(\\}\\}) +(<b>philic</b>)",
+    "replacement": "$1$2",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": false}
+},
+{
+    "pattern": "(\\}\\}) +(<b>toxicity</b>)",
+    "replacement": "$1$2",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": false}
+},
+{
+    "pattern": "(\\}\\}) +(<b>hydramnios</b>)",
+    "replacement": "$1$2",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+},
+{
+    "pattern": "(\\}\\}) +(<b>(?:lateral|ocular)</b>)",
+    "replacement": "$1$2",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+    "delete_chars": {"max_chars": 0, "count_spaces": true}
+},
+{
+    "pattern": "(\band\b)\\s+/\\s+(\bor\b)",
+    "replacement": "$1/$2",
+    "regex": true,
+    "fields": [
+    "All"
+    ],
+    "delete_chars": {"max_chars": 1, "count_spaces": false}
+}
+]

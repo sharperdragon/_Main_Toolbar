@@ -14,7 +14,7 @@ from .FR_global_utils import (
     MODULES_CONFIG_PATH, 
     BatchFRConfig,
     now_stamp, 
-    _coerce_int,
+    _coerce_int, 
     _norm_path,
     RULES_PATH,
 )
@@ -23,52 +23,41 @@ from .FR_global_utils import (
 
 def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig:
     """Load + normalize batch F&R config from modules_config.json; apply safe fallbacks."""
-    cfg_path = Path(config_path) if config_path else Path(MODULES_CONFIG_PATH)
-    try:
-        cfg_path = cfg_path.expanduser().resolve()
-    except Exception:
-        cfg_path = Path(str(cfg_path))
+    cfg_path = Path(config_path) if config_path else MODULES_CONFIG_PATH
     data: Dict[str, Any] = {}
     try:
         text = cfg_path.read_text(encoding="utf-8")
         data = json.loads(text)
-        if not isinstance(data, dict):
-            data = {}
     except Exception:
         data = {}
 
     g = data.get("global_config", {}) or {}
-    b = (
-        data.get("batch_FR_config")
-        or data.get("batch_fr_config")
-        or {}
-    )
-    if not isinstance(g, dict):
-        g = {}
-    if not isinstance(b, dict):
-        b = {}
+    b = data.get("batch_FR_config", {}) or {}
 
     ts_fmt = g.get("ts_format") or TS_FORMAT
-
     # Resolve log directory:
     # - Prefer global_config["log_dir"] if present
-    # - Normalize/expand it via _norm_path
-    # - If missing/invalid, default to Desktop/anki_logs/Main_toolbar
-    raw_log_dir = str(g.get("log_dir", "") or "").strip()
-    norm_log_dir = _norm_path(raw_log_dir) if raw_log_dir else None
-
-    if norm_log_dir is None:
-        # Default to a stable Desktop subfolder for this module
-        log_dir_path = (DESKTOP_PATH / "anki_logs" / "Main_toolbar").expanduser().resolve()
+    # - Normalize/expand it
+    # - Ensure the directory exists
+    # - Fall back to DESKTOP_PATH only on failure
+    raw_log_dir = g.get("log_dir")
+    if raw_log_dir:
+        tmp_log_dir = _norm_path(raw_log_dir) or DESKTOP_PATH
     else:
-        # Use the normalized path from config
-        log_dir_path = Path(norm_log_dir).expanduser().resolve()
+        tmp_log_dir = DESKTOP_PATH
 
-    # Ensure the directory exists; if this fails, we just leave it best-effort.
     try:
+        # Ensure we have a concrete Path and that it exists on disk.
+        log_dir_path = Path(tmp_log_dir).expanduser().resolve()
         log_dir_path.mkdir(parents=True, exist_ok=True)
     except Exception:
-        pass
+        # Hard fallback: use the Desktop path if anything goes wrong.
+        log_dir_path = DESKTOP_PATH
+        try:
+            log_dir_path.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # Last-resort: leave as-is; logging will best-effort.
+            pass
 
     max_loops = _coerce_int(b.get("max_loops", 30), 30)
 
@@ -84,10 +73,8 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
             rules_path = (base_dir / candidate).resolve()
 
     fields_all = b.get("fields_all") or []
-    # Support both legacy "Defaults" (capital D) and newer "defaults" keys
-    defaults = b.get("defaults") or b.get("Defaults") or {}
-    _raw_remove_cfg = b.get("remove_config") or {}
-    remove_cfg = dict(_raw_remove_cfg) if isinstance(_raw_remove_cfg, dict) else {}
+    defaults = b.get("Defaults") or {}
+    remove_cfg = b.get("remove_config") or {}
     log_mode = (b.get("log_mode") or "diff").lower()
     include_unchanged = bool(b.get("include_unchanged", False))
 
@@ -106,28 +93,16 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
     globals()["TS_FORMAT"] = ts_fmt
     globals()["DESKTOP"] = log_dir_path
 
-    # Remove settings: propagate to top-level snapshot for engine/remove_runner
-    remove_rules_suffix = (
-        b.get("remove_rules_suffix")
-        or remove_cfg.get("remove_rules_suffix")
-        or "_remove_rules.txt"
-    )
-    field_remove_rules_name = (
-        b.get("field_remove_rules_name")
-        or remove_cfg.get("field_remove_rules_name")
-        or "field_remove_rules.txt"
-    )
+    rules_path = RULES_PATH
 
     # build engine-facing snapshot
     snapshot: BatchFRConfig = {
         "ts_format": ts_fmt,
         "log_dir": str(log_dir_path),
-        "rules_path": str(rules_path) if rules_path else str(RULES_PATH),
-        "fields_all": list(fields_all) if isinstance(fields_all, list) else [],
-        "defaults": dict(defaults) if isinstance(defaults, dict) else {},
+        "rules_path": str(rules_path),
+        "fields_all": fields_all,
+        "defaults": defaults,
         "remove_config": remove_cfg,
-        "remove_rules_suffix": remove_rules_suffix,
-        "field_remove_rules_name": field_remove_rules_name,
         "log_mode": log_mode,
         "include_unchanged": include_unchanged,
         "max_loops": max_loops,

@@ -1,0 +1,4 @@
+[
+  { "file-defaults": { "flags": "mi", "fields": ["Tags"] } },
+  { "pattern": "_and_", "replacement": "_&_" }
+]

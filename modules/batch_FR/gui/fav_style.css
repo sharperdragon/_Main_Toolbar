@@ -81,9 +81,9 @@
   justify-content: center;
   gap: 6px;
   min-height: 220px;
-  /* * Allow columns to grow wider based on content */
   width: 100%;
   column-gap: 2px;
+  min-width: 45vw;
 }
 
 .favorites-items-panel {

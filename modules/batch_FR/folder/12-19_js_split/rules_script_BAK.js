@@ -9,6 +9,8 @@ function sendToPython(message) {
 }
 
 // --- State ------------------------------------------------------------
+let gPayload = null;
+
 let groupsListEl,
   filesContainerEl,
   filterEl,
@@ -19,7 +21,17 @@ let groupsListEl,
   favoritesSelectedListEl,
   favoritesFilterEl,
   favoritesAddBtn,
-  favoritesRemoveBtn;
+  favoritesRemoveBtn,
+  settingsModalEl,
+  settingsSaveBtn,
+  settingsCancelBtn,
+  settingsCloseBtn,
+  settingsGroupsChecklistEl,
+  settingsRulesFilterEl,
+  settingsRulesSelectAllBtn,
+  settingsRulesSelectNoneBtn,
+  settingsFilesContainerEl,
+  settingsTabButtons;
 
 document.addEventListener("DOMContentLoaded", function () {
   groupsListEl = document.getElementById("groups-list");
@@ -72,6 +84,62 @@ document.addEventListener("DOMContentLoaded", function () {
     favoritesRemoveBtn.addEventListener("click", onFavoritesRemove);
   }
 
+  // ------------------------------------------------------------------
+  // * Settings modal: default selections (groups / rule files)
+  // ------------------------------------------------------------------
+  settingsModalEl = document.getElementById("settings-modal");
+  settingsSaveBtn = document.getElementById("settings-save");
+  settingsCancelBtn = document.getElementById("settings-cancel");
+  settingsCloseBtn = document.getElementById("settings-close-btn");
+
+  // New Settings UI elements (tabbed)
+  settingsGroupsChecklistEl = document.getElementById("settings-groups-checklist");
+  settingsRulesFilterEl = document.getElementById("settings-rules-filter");
+  settingsRulesSelectAllBtn = document.getElementById("settings-rules-select-all");
+  settingsRulesSelectNoneBtn = document.getElementById("settings-rules-select-none");
+  settingsFilesContainerEl = document.getElementById("settings-files-container");
+  settingsTabButtons = Array.from(document.querySelectorAll(".settings-tab"));
+
+  const settingsBtn = document.getElementById("settings-btn");
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", openSettingsModal);
+  }
+
+  if (settingsCloseBtn) {
+    settingsCloseBtn.addEventListener("click", closeSettingsModal);
+  }
+  if (settingsCancelBtn) {
+    settingsCancelBtn.addEventListener("click", closeSettingsModal);
+  }
+  if (settingsSaveBtn) {
+    settingsSaveBtn.addEventListener("click", onSettingsSave);
+  }
+
+  if (settingsRulesFilterEl) {
+    settingsRulesFilterEl.addEventListener("input", function () {
+      renderSettingsRuleFiles();
+    });
+  }
+  if (settingsRulesSelectAllBtn) {
+    settingsRulesSelectAllBtn.addEventListener("click", function () {
+      settingsSelectAllVisibleRules(true);
+    });
+  }
+  if (settingsRulesSelectNoneBtn) {
+    settingsRulesSelectNoneBtn.addEventListener("click", function () {
+      settingsSelectAllVisibleRules(false);
+    });
+  }
+
+  if (settingsTabButtons && settingsTabButtons.length) {
+    settingsTabButtons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const tab = btn.getAttribute("data-tab") || "groups";
+        settingsActivateTab(tab);
+      });
+    });
+  }
+
   // Tell Python we are ready for initial data
   sendToPython({ command: "ready" });
 });
@@ -91,6 +159,161 @@ window.batchFrInit = function (payload) {
   renderFiles();
   updateStatus("");
 };
+// -------------------------------------------------------------------------
+// * Defaults helpers
+// -------------------------------------------------------------------------
+function _getDefaultsObj() {
+  const defaults = (gPayload && gPayload.defaults) || {};
+  return defaults && typeof defaults === "object" ? defaults : {};
+}
+
+function _getDefaultGroupNameSet() {
+  const defaults = _getDefaultsObj();
+  const arr = defaults.default_group_names;
+  if (Array.isArray(arr) && arr.length) {
+    return new Set(arr.map(function (x) { return String(x); }));
+  }
+  return new Set();
+}
+
+function _getDefaultRulePathSet() {
+  const defaults = _getDefaultsObj();
+  const arr = defaults.default_rule_paths;
+  if (Array.isArray(arr) && arr.length) {
+    return new Set(arr.map(function (x) { return String(x); }));
+  }
+  return new Set();
+}
+
+// -------------------------------------------------------------------------
+// * Shared path + folder tree helpers (Main + Settings)
+// -------------------------------------------------------------------------
+
+function splitPathParts(rawPath) {
+  return String(rawPath || "").split(/[\\/]/).filter(Boolean);
+}
+
+function stripRulesAnchor(parts) {
+  // Try to anchor nesting under the "rules" directory if present.
+  // This makes nesting stable even when group names are not path segments.
+  if (!Array.isArray(parts) || !parts.length) {
+    return parts || [];
+  }
+  for (let i = 0; i < parts.length; i++) {
+    if (String(parts[i]).toLowerCase() === "rules") {
+      return parts.slice(i + 1);
+    }
+  }
+  return parts;
+}
+
+function getFolderPartsAndLeaf(groupName, f) {
+  const rawPath = (f && f.path) ? String(f.path) : "";
+  let parts = splitPathParts(rawPath);
+  parts = stripRulesAnchor(parts);
+
+  let subParts = [];
+  if (parts.length) {
+    const gName = String(groupName || "");
+    const idx = gName ? parts.lastIndexOf(gName) : -1;
+
+    if (idx !== -1 && idx + 1 < parts.length) {
+      // Prefer everything after the group folder when present
+      subParts = parts.slice(idx + 1);
+    } else {
+      // Otherwise nest using the anchored relative path itself
+      subParts = parts.slice(0);
+    }
+  }
+
+  // Ensure we have a leaf
+  const fallbackLeaf = (f && f.name) ? String(f.name) : (parts.length ? String(parts[parts.length - 1]) : rawPath);
+  if (!subParts.length) {
+    subParts = [fallbackLeaf];
+  }
+
+  const folderParts = subParts.slice(0, -1);
+  const leafName = String(subParts[subParts.length - 1] || fallbackLeaf || "");
+  return { folderParts: folderParts, leafName: leafName };
+}
+
+function ensureNestedFolders(parentEl, folderCache, basePrefix, folderParts, css, forceOpen) {
+  if (!parentEl || !Array.isArray(folderParts) || !folderParts.length) {
+    return parentEl;
+  }
+
+  let parent = parentEl;
+  let prefix = String(basePrefix || "");
+  const cache = folderCache || {};
+
+  folderParts.forEach(function (folder) {
+    const fname = String(folder || "");
+    prefix = prefix + "/" + fname;
+
+    let container = cache[prefix];
+    if (!container) {
+      const folderDiv = document.createElement("div");
+      folderDiv.className = css.folderDivClass;
+      folderDiv.setAttribute("data-open", "1");
+
+      const folderHeader = document.createElement("div");
+      folderHeader.className = css.headerClass;
+
+      const subCaret = document.createElement("span");
+      subCaret.className = "hy-caret";
+      subCaret.textContent = "▼";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = css.titleClass;
+      nameSpan.textContent = fname;
+
+      folderHeader.appendChild(subCaret);
+      folderHeader.appendChild(nameSpan);
+      folderDiv.appendChild(folderHeader);
+
+      const folderBody = document.createElement("div");
+      folderBody.className = css.bodyClass;
+      folderDiv.appendChild(folderBody);
+
+      // Toggle handler (unless we are forcing open due to filter)
+      if (!forceOpen) {
+        folderHeader.addEventListener("click", function () {
+          const open = folderDiv.getAttribute("data-open") === "1";
+          folderDiv.setAttribute("data-open", open ? "0" : "1");
+          folderBody.style.display = open ? "none" : "block";
+          subCaret.textContent = open ? "▶" : "▼";
+        });
+      } else {
+        folderDiv.setAttribute("data-open", "1");
+        folderBody.style.display = "block";
+        subCaret.textContent = "▼";
+      }
+
+      parent.appendChild(folderDiv);
+      container = folderBody;
+      cache[prefix] = container;
+    }
+
+    parent = container;
+  });
+
+  return parent;
+}
+
+// Python may call this after saving settings to refresh defaults immediately
+window.batchFrSetDefaults = function (defaults) {
+  if (!gPayload) {
+    gPayload = { groups: [], defaults: { dry_run: true } };
+  }
+  const existing = _getDefaultsObj();
+  const incoming = (defaults && typeof defaults === "object") ? defaults : {};
+  gPayload.defaults = Object.assign({}, existing, incoming);
+
+  // Re-render to apply the new default selection logic
+  renderGroups();
+  renderFiles();
+};
+
 function getExtensiveDebug() {
   // Prefer the actual checkbox if it exists
   if (extensiveDebugEl) {
@@ -116,7 +339,14 @@ function renderGroups() {
     const name = (group.name || "").trim();
     const lower = name.toLowerCase();
 
-    cb.checked = !lower.startsWith("z");
+    const defaultGroups = _getDefaultGroupNameSet();
+
+    // If user saved defaults, use them; otherwise keep legacy behavior.
+    if (defaultGroups.size > 0) {
+      cb.checked = defaultGroups.has(name);
+    } else {
+      cb.checked = !lower.startsWith("z");
+    }
 
     cb.dataset.groupName = group.name;
 
@@ -124,7 +354,7 @@ function renderGroups() {
     label.textContent = group.name;
 
     cb.addEventListener("change", function () {
-      renderFiles(); 
+      renderFiles();
     });
 
     wrap.appendChild(cb);
@@ -167,7 +397,9 @@ function renderFiles() {
       if (!filterText) {
         return true;
       }
-      const haystack = (f.label + " " + f.alias + " " + f.name).toLowerCase();
+      const haystack = String(
+        (f.label || "") + " " + (f.alias || "") + " " + (f.name || "")
+      ).toLowerCase();
       return haystack.indexOf(filterText) !== -1;
     });
 
@@ -211,69 +443,25 @@ function renderFiles() {
     const folderCache = {};
 
     filteredFiles.forEach(function (f) {
-      const rawPath = f.path || "";
-      const parts = rawPath.split(/[\\/]/).filter(Boolean);
+      // Compute folder nesting parts using the shared helper
+      const partsInfo = getFolderPartsAndLeaf(group.name, f);
+      const folderParts = partsInfo.folderParts;
+      const fileLeafName = partsInfo.leafName;
 
-      let subParts = [];
-      if (parts.length) {
-        // Try to find the group folder within the path and take everything after it
-        const idx = parts.lastIndexOf(group.name);
-        if (idx !== -1 && idx + 1 < parts.length) {
-          subParts = parts.slice(idx + 1);
-        } else {
-          subParts = [f.name || parts[parts.length - 1]];
-        }
-      }
-
-      if (!subParts.length) {
-        subParts = [f.name || rawPath];
-      }
-
-      // All but last = nested folders, last = file name
-      const folderParts = subParts.slice(0, -1);
-      const fileLeafName = subParts[subParts.length - 1];
-
-      let parent = body;
-      let prefix = group.name;
-
-      // Build / reuse nested folder containers
-      folderParts.forEach(function (folder) {
-        prefix = prefix + "/" + folder;
-        let container = folderCache[prefix];
-        if (!container) {
-          const folderDiv = document.createElement("div");
-          folderDiv.className = "file-subfolder";
-          folderDiv.setAttribute("data-open", "1");
-
-          const folderHeader = document.createElement("div");
-          folderHeader.className = "file-subfolder-header";
-
-          const subCaret = document.createElement("span");
-          subCaret.className = "hy-caret";
-          subCaret.textContent = "▼";
-
-          const nameSpan = document.createElement("span");
-          nameSpan.className = "file-subfolder-label";
-          nameSpan.textContent = folder;
-
-          folderHeader.appendChild(subCaret);
-          folderHeader.appendChild(nameSpan);
-          folderDiv.appendChild(folderHeader);
-
-          const folderBody = document.createElement("div");
-          folderBody.className = "file-subfolder-body";
-          folderDiv.appendChild(folderBody);
-
-          folderHeader.addEventListener("click", function () {
-            toggleFolderPanel(folderDiv);
-          });
-
-          parent.appendChild(folderDiv);
-          container = folderBody;
-          folderCache[prefix] = container;
-        }
-        parent = container;
-      });
+      // Build / reuse nested folder containers (shared)
+      const parent = ensureNestedFolders(
+        body,
+        folderCache,
+        group.name,
+        folderParts,
+        {
+          folderDivClass: "file-subfolder",
+          headerClass: "file-subfolder-header",
+          titleClass: "file-subfolder-label",
+          bodyClass: "file-subfolder-body",
+        },
+        false
+      );
 
       // Leaf: actual file row (same behavior as before)
       const item = document.createElement("div");
@@ -284,7 +472,14 @@ function renderFiles() {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.className = "file-checkbox";
-      cb.checked = true;
+
+      const defaultRulePaths = _getDefaultRulePathSet();
+      if (defaultRulePaths.size > 0) {
+        cb.checked = !!(f.path && defaultRulePaths.has(String(f.path)));
+      } else {
+        cb.checked = true;
+      }
+
       cb.dataset.path = f.path;
 
       const main = document.createElement("span");
@@ -840,3 +1035,258 @@ window.batchFrSetPreview = function (payload) {
     pre.textContent = text;
   }
 };
+
+// --- Settings modal helpers -----------------------------------------------
+
+// In-settings state (do not mutate main UI selection until Save)
+let gSettingsDefaultGroupNames = new Set();
+let gSettingsDefaultRulePathSet = new Set();
+
+function settingsActivateTab(tabName) {
+  const tabs = Array.from(document.querySelectorAll(".settings-tab"));
+  const panels = Array.from(document.querySelectorAll(".settings-tab-panel"));
+
+  tabs.forEach(function (t) {
+    const name = t.getAttribute("data-tab");
+    t.classList.toggle("is-active", name === tabName);
+  });
+
+  panels.forEach(function (p) {
+    const name = p.getAttribute("data-panel");
+    p.classList.toggle("is-active", name === tabName);
+  });
+}
+
+function openSettingsModal() {
+  if (!settingsModalEl || !gPayload || !Array.isArray(gPayload.groups)) {
+    return;
+  }
+
+  const defaults = _getDefaultsObj();
+
+  gSettingsDefaultGroupNames = new Set(
+    Array.isArray(defaults.default_group_names)
+      ? defaults.default_group_names.map(function (x) { return String(x); })
+      : []
+  );
+
+  gSettingsDefaultRulePathSet = new Set(
+    Array.isArray(defaults.default_rule_paths)
+      ? defaults.default_rule_paths.map(function (x) { return String(x); })
+      : []
+  );
+
+  if (settingsRulesFilterEl) {
+    settingsRulesFilterEl.value = "";
+  }
+
+  renderSettingsGroups();
+  renderSettingsRuleFiles();
+  settingsActivateTab("groups");
+
+  settingsModalEl.classList.remove("hidden");
+}
+
+function closeSettingsModal() {
+  if (settingsModalEl) {
+    settingsModalEl.classList.add("hidden");
+  }
+}
+
+function renderSettingsGroups() {
+  if (!settingsGroupsChecklistEl || !gPayload || !Array.isArray(gPayload.groups)) {
+    return;
+  }
+
+  settingsGroupsChecklistEl.innerHTML = "";
+
+  const seen = new Set();
+  (gPayload.groups || []).forEach(function (group) {
+    const name = String(group.name || "").trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+
+    if (name === "★ Favorites") return;
+
+    const li = document.createElement("li");
+    li.className = "settings-check-item";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "settings-check";
+    cb.dataset.groupName = name;
+    cb.checked = gSettingsDefaultGroupNames.has(name);
+
+    cb.addEventListener("change", function () {
+      if (cb.checked) gSettingsDefaultGroupNames.add(name);
+      else gSettingsDefaultGroupNames.delete(name);
+    });
+
+    const label = document.createElement("span");
+    label.className = "settings-check-label";
+    label.textContent = name;
+
+    li.appendChild(cb);
+    li.appendChild(label);
+    settingsGroupsChecklistEl.appendChild(li);
+  });
+}
+
+function settingsRuleMatchesFilter(f, filterText) {
+  if (!filterText) return true;
+  const haystack = String((f.label || "") + " " + (f.alias || "") + " " + (f.name || "")).toLowerCase();
+  return haystack.indexOf(filterText) !== -1;
+}
+
+function renderSettingsRuleFiles() {
+  if (!settingsFilesContainerEl || !gPayload || !Array.isArray(gPayload.groups)) {
+    return;
+  }
+
+  settingsFilesContainerEl.innerHTML = "";
+
+  const filterText = (settingsRulesFilterEl && settingsRulesFilterEl.value)
+    ? settingsRulesFilterEl.value.trim().toLowerCase()
+    : "";
+
+  (gPayload.groups || []).forEach(function (group) {
+    const groupName = String(group.name || "").trim();
+    if (!groupName || groupName === "★ Favorites") return;
+
+    const files = Array.isArray(group.files) ? group.files : [];
+    const filteredFiles = files.filter(function (f) {
+      return settingsRuleMatchesFilter(f, filterText);
+    });
+
+    if (!filteredFiles.length) return;
+
+    const groupDiv = document.createElement("div");
+    groupDiv.className = "settings-file-group";
+    groupDiv.setAttribute("data-open", "1");
+
+    const header = document.createElement("div");
+    header.className = "settings-file-group-header";
+
+    const caret = document.createElement("span");
+    caret.className = "hy-caret";
+    caret.textContent = "▼";
+
+    const title = document.createElement("span");
+    title.className = "settings-file-group-title";
+    title.textContent = groupName + " (" + filteredFiles.length + ")";
+
+    header.appendChild(caret);
+    header.appendChild(title);
+    groupDiv.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "settings-file-group-body";
+    groupDiv.appendChild(body);
+
+    if (!filterText) {
+      header.addEventListener("click", function () {
+        const open = groupDiv.getAttribute("data-open") === "1";
+        groupDiv.setAttribute("data-open", open ? "0" : "1");
+        body.style.display = open ? "none" : "block";
+        caret.textContent = open ? "▶" : "▼";
+      });
+    } else {
+      // When filtering, keep groups open so matches are visible
+      groupDiv.setAttribute("data-open", "1");
+      body.style.display = "block";
+      caret.textContent = "▼";
+    }
+
+    const folderCache = {};
+
+    filteredFiles.forEach(function (f) {
+      // Compute folder nesting parts using the shared helper
+      const partsInfo = getFolderPartsAndLeaf(groupName, f);
+      const folderParts = partsInfo.folderParts;
+      const fileLeafName = partsInfo.leafName;
+
+      // If filtering, keep everything expanded so matches aren't hidden
+      const forceOpen = !!filterText;
+
+      // Build / reuse nested folder containers (shared)
+      const parent = ensureNestedFolders(
+        body,
+        folderCache,
+        groupName,
+        folderParts,
+        {
+          folderDivClass: "settings-file-subfolder",
+          headerClass: "settings-file-subfolder-header",
+          titleClass: "settings-file-subfolder-title",
+          bodyClass: "settings-file-subfolder-body",
+        },
+        forceOpen
+      );
+
+      const row = document.createElement("div");
+      row.className = "settings-file-item";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "settings-file-checkbox";
+      cb.dataset.path = f.path;
+      cb.checked = !!(f.path && gSettingsDefaultRulePathSet.has(String(f.path)));
+
+      cb.addEventListener("change", function () {
+        const p = String(cb.dataset.path || "");
+        if (!p) return;
+        if (cb.checked) gSettingsDefaultRulePathSet.add(p);
+        else gSettingsDefaultRulePathSet.delete(p);
+      });
+
+      const label = document.createElement("span");
+      label.className = "settings-file-label";
+      label.textContent = f.label || f.name || fileLeafName;
+
+      row.appendChild(cb);
+      row.appendChild(label);
+      parent.appendChild(row);
+    });
+
+    settingsFilesContainerEl.appendChild(groupDiv);
+  });
+}
+
+function settingsSelectAllVisibleRules(checked) {
+  if (!settingsFilesContainerEl) return;
+  const cbs = settingsFilesContainerEl.querySelectorAll(".settings-file-checkbox");
+  cbs.forEach(function (cb) {
+    cb.checked = !!checked;
+    const p = String(cb.dataset.path || "");
+    if (!p) return;
+    if (checked) gSettingsDefaultRulePathSet.add(p);
+    else gSettingsDefaultRulePathSet.delete(p);
+  });
+}
+
+function onSettingsSave() {
+  if (!gPayload) {
+    closeSettingsModal();
+    return;
+  }
+
+  const nextDefaults = {
+    default_group_names: Array.from(gSettingsDefaultGroupNames),
+    default_rule_paths: Array.from(gSettingsDefaultRulePathSet),
+  };
+
+  sendToPython(Object.assign({ command: "save_default_selection" }, nextDefaults));
+
+  // Apply immediately in the current session, even if Python doesn't push back
+  const existing = _getDefaultsObj();
+  if (!gPayload.defaults || typeof gPayload.defaults !== "object") {
+    gPayload.defaults = { dry_run: true };
+  }
+  gPayload.defaults = Object.assign({}, existing, nextDefaults);
+
+  // Re-render so the main UI reflects new defaults right now
+  renderGroups();
+  renderFiles();
+
+  closeSettingsModal();
+}

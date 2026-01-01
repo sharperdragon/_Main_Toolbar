@@ -21,6 +21,7 @@ from .tag_rename_utils import (
     _rename_tag_token,
     # ? NEW: left-path helpers
     has_left_path_capture, inject_left_path_capture,
+    build_substring_pairs_from_prefixes, compress_parent_ops,
 )
 
 
@@ -62,7 +63,7 @@ def _cfg_int(bucket: dict, key: str, default: int, lo: int | None = None, hi: in
 
 # * Report/log locations + timestamp (defaults; can be overridden by modules_config.json)
 TS_FORMAT: str = "%H-%M_%m-%d"
-LOG_PATH: Path = Path(os.path.expanduser("~/Desktop/anki logs"))
+LOG_PATH: Path = Path(os.path.expanduser("~/Desktop/anki_logs"))
 
 # Optional overrides from config (prefer global_config; fall back to tag_renaming)
 try:
@@ -358,6 +359,51 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
         for p in resolved:
             if not (p.src == "json" and p.kind == "regex"):
                 continue
+            # * Fast path for very common literal-substring conversions like `_and_` -> `_&_`.
+            #   Your previous debug showed regex + fullmatch over ~50k prefixes is slow.
+            #   If the user intends a plain substring swap, do it without regex.
+            if p.old == "_and_" and p.new == "_&_":
+                # Build all old->new parent pairs using a literal substring swap (fast).
+                expanded_pairs = build_substring_pairs_from_prefixes(
+                    prefixes,
+                    old_sub="_and_",
+                    new_sub="_&_",
+                    src=p.src,
+                    kind=p.kind,
+                )
+
+                # Keep only top-level renames; children move automatically when parents rename.
+                compressed_pairs = compress_parent_ops(expanded_pairs)
+
+                # Examples for debug (cap output)
+                examples: List[Tuple[str, str]] = []
+                for pp in expanded_pairs[:REGEX_DEBUG_EXAMPLES]:
+                    examples.append((pp.old, pp.new))
+
+                # Emit debug entry similar to regex rules
+                meta: List[Tuple[str, str]] = []
+                meta.append(("fast-path", "literal substring replace"))
+                meta.append(("expanded", str(len(expanded_pairs))))
+                meta.append(("compressed", str(len(compressed_pairs))))
+
+                regex_debug.append(RegexRuleDebug(
+                    pattern=p.old, replacement=p.new, scope="path",
+                    compile_ok=True, compile_error=None, pool="prefixes",
+                    pool_size=len(prefixes), matched_count=len(expanded_pairs),
+                    examples=(meta + examples), truncated=False,
+                    orig_pattern=p.old, orig_replacement=p.new,
+                    normalized=False,
+                ))
+
+                if expanded_pairs:
+                    # Track hits by a stable key for the report table.
+                    regex_hits[p.old] = len(expanded_pairs)
+                else:
+                    regex_no_match.append((p.old, p.new, "path"))
+
+                # Add the *compressed* pairs to the valid ops list.
+                valid.extend(compressed_pairs)
+                continue
             patt, repl, _ = _sanitize_parent_only(p.old, p.new)
             # * Normalize for full-path matching:
             #     optional prefix ^(?:.*::)? so user capture group indices stay stable.
@@ -418,6 +464,14 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
                 regex_no_match.append((patt, repl, "path"))
     else:
         # Regex disabled: ignore regex rules, literals already handled
+        pass
+
+    # * Final compression: avoid renaming child tags when a parent rename already exists.
+    #   This keeps huge expansions from bogging down execution.
+    try:
+        valid = compress_parent_ops(valid)
+    except Exception:
+        # Best-effort only; never block preflight on compression.
         pass
 
     return Preflight(

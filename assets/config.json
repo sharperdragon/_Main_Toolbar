@@ -4,41 +4,49 @@
     "default_icon": "icons/bent_menu-burger.png",
     "default_submenu": "",
     "show_disabled_items": false,
+
     "Other_addon_names": [
         "_Change_notes",
+        "_browser_menu",
+        "_k_of_N_tags",
         "_High-Yield-Tags",
-        "_QID_Search",
-        "_Main_Toolbar",  
+        "_Main_Toolbar",
         "_easy_find",
         "_Filtered_from_",
-        "_Tag_Dict",
+        "_Tag_Stats",
         "_Exam_deck_Gen",
         "_Add_table",
-        "_global_css", 
+        "_global_css",
         "_confetti"
-
     ],
+
     "addon_emojis": {
-        "Change_notes": "📝",
-        "High-Yield-Tags": "🏷️",
-        "QID_Search": "🔍",
+        "_Change_notes": "📝",
+        "_k_of_N_tags": "꠵",
+        "_browser_menu": "📇",
+        "_High-Yield-Tags": "🏷️",
         "_Main_Toolbar": "🛠️",
-        "easy_find": "🔍",
-        "Filtered_from_":"➕",
-        "Tag_Dict":"📖",
-        "Exam_deck_Gen": "🪄",
-        "Add_table": "📊",
-        "global_css": "🌎",
-        "confetti": "🎉"
+        "_easy_find": "🔍",
+        "_Filtered_from_": "➕",
+        "_Tag_Dict": "📖",
+        "_Exam_deck_Gen": "🪄",
+        "_Add_table": "📊",
+        "_global_css": "🌎",
+        "_confetti": "🎉"
     },
+
     "addon_nicknames": {
-        "Filtered_from_": "Filtered from tag/deck",
-        "Add_img_class": "Add IMG class",
-        "Change_notes": "~CHANGE NOTES~",
-        "Tag_Dict":"Tag Dictionary", 
-        "Exam_deck_Gen": "Exam Deck Generator",
-        "Add_table": "Classify-tables",
-        "global_css": "Global Stylesheet",
-        "confetti": "confetti"
+        "_Change_notes": "~CHANGE NOTES~",
+        "_k_of_N_tags": "__ of N Tags",
+        "_browser_menu": "Browser Menu",
+        "_High-Yield-Tags": "High-Yield Tags",
+        "_Main_Toolbar": "Main Toolbar",
+        "_easy_find": "Easy Find",
+        "_Filtered_from_": "Filtered from tag/deck",
+        "_Tag_Dict": "Tag Dictionary",
+        "_Exam_deck_Gen": "Exam Deck Generator",
+        "_Add_table": "Classify-tables",
+        "_global_css": "Global Stylesheet",
+        "_confetti": "confetti"
     }
 }

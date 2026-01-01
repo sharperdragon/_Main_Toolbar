@@ -99,7 +99,340 @@ body {
   background: #e2e7f3;
 }
 
+/* Settings button (next to Favorites) */
+#settings-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-right: 4px;
+}
 
+#settings-btn:hover {
+  background: #e2e7f3;
+}
+
+/* ------------------------------------------------------------------
+   Settings modal (defaults: groups/rules)
+   ------------------------------------------------------------------ */
+
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.settings-panel {
+  position: relative;
+  z-index: 1;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px solid #c3cad8;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  box-sizing: border-box;
+  width: min(980px, 92vw);
+  height: min(720px, 88vh);
+  max-width: 92vw;
+  max-height: 88vh;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #d0d4dd;
+}
+
+.settings-title {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.035em;
+  color: #555;
+}
+
+.settings-close {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  background: #e2e7f3;
+}
+
+.settings-body {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-body h4 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #555;
+}
+
+/* --- New tabbed Settings UI (groups + rule files) ------------------------ */
+
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 0 6px 0;
+  border-bottom: 1px solid #d0d4dd;
+}
+
+.settings-tab {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+  user-select: none;
+}
+
+
+#settings-files-container {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.settings-tab:hover {
+  background: #e2e7f3;
+}
+
+.settings-tab.is-active {
+  background: #4c78ff;
+  border-color: #3b63dd;
+  color: #fff;
+}
+
+.settings-tab-panel {
+  display: none;
+  min-height: 0;
+}
+
+.settings-tab-panel.is-active {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-help {
+  font-size: 10px;
+  color: #666;
+}
+
+.settings-list-wrap {
+  flex: 1 1 0;
+  border: 1px solid #d0d4dd;
+  border-radius: 6px;
+  background: #ffffff;
+
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+
+  min-height: 0;
+}
+
+.settings-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+}
+
+.settings-check-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.settings-check-item:hover {
+  background: #f2f5fb;
+}
+
+.settings-check {
+  margin: 0;
+}
+
+.settings-check-label {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#settings-rules-filter {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #fff;
+}
+
+
+
+
+.settings-toolbar button {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #c3cad8;
+  background: #eef1f7;
+  cursor: pointer;
+}
+
+.settings-toolbar button:hover {
+  background: #e2e7f3;
+}
+
+.settings-files-wrap {
+  flex: 1 1 0;
+  border: 1px solid #d0d4dd;
+  border-radius: 6px;
+  background: #ffffff;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+
+  padding: 6px 12px 6px 6px;
+  min-height: 0;
+  font-size: 11px;
+}
+
+/* Settings file list: mirror main file list styles */
+.settings-file-group {
+  margin-bottom: 2px;
+  border-radius: 4px;
+}
+
+.settings-file-group-header {
+  display: flex;
+  align-items: center;
+  padding: 2px 0;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #555;
+  cursor: pointer;
+}
+
+.settings-file-group-header:hover {
+  background-color: #e4ebfa;
+}
+
+.settings-file-group-body {
+  padding-left: 1px;
+  margin-left: 11px;
+  border-left: 1.5px solid #dfe8ff;
+}
+
+.settings-file-subfolder {
+  margin-top: 1px;
+  margin-bottom: 1px;
+}
+
+.settings-file-subfolder-header {
+  display: flex;
+  align-items: center;
+  padding: 1px 0;
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #666;
+  cursor: pointer;
+}
+
+.settings-file-subfolder-header:hover {
+  background-color: #edf2ff;
+}
+
+.settings-file-subfolder-body {
+  margin-left: 14px;
+  padding-left: 4px;
+  border-left: 1px solid #dfe8ff;
+}
+
+.settings-file-subfolder-title {
+  margin-left: 2px;
+}
+
+.settings-file-item {
+  display: flex;
+  align-items: center;
+  padding: 2px 2px;
+  border-radius: 3px;
+}
+
+.settings-file-item:hover {
+  background: #f2f5fb;
+}
+
+.settings-file-checkbox {
+  margin-right: 6px;
+}
+
+.settings-file-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+
+.settings-actions-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* group-item styles */
 .group-item {
   display: flex;
   align-items: center;
@@ -359,3 +692,12 @@ body {
   display: none !important;
 }
 
+
+.settings-file-group-header {
+  display: flex;
+  align-items: center;
+}
+
+.settings-file-group-title {
+  flex: 1;
+}

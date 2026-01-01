@@ -33,7 +33,7 @@ def _load_modules_config() -> dict:
         # Minimal fallback if config is missing or invalid
         return {
             "global_config": {
-                "log_dir": "~/Desktop/anki logs/Main_toolbar",
+                "log_dir": "~/Desktop/anki_logs/Main_toolbar",
                 "ts_format": "%H-%M_%m-%d",
             }
         }
@@ -44,7 +44,7 @@ def _get_global_log_dir() -> Path:
     cfg = _load_modules_config()
     log_dir_str = (
         cfg.get("global_config", {}).get("log_dir")
-        or "~/Desktop/anki logs/Main_toolbar"
+        or "~/Desktop/anki_logs/Main_toolbar"
     )
     return Path(log_dir_str).expanduser()
 

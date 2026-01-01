@@ -65,7 +65,7 @@ def load_other_configs():
     def make_open_fn(addon_name):
         def _open():
             dlg = ConfigDialog(addon_name, ConfigManager)
-            dlg.exec_()
+            dlg.exec()
         return _open
 
     try:

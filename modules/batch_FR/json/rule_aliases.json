@@ -1,0 +1,42 @@
+{
+  "<Top>": {
+    "QUICK_TEMPLATE.json": "",
+    "bonus-text_rule.json": "",
+    "copy_remove_rules.txt": "",
+    "element_rules.json": "",
+    "field_remove_rules.txt": "",
+    "fontweight_rules.json": "",
+    "testing_rules.json": "",
+    "uno_remove_rules.txt": ""
+  },
+  "Main": {
+    "MISC_SAFE_rules.json": "",
+    "acid-base_rules.json": "",
+    "bold-cloze_rules.json": "",
+    "clean-up_rules.json": "",
+    "cloze-hint_rules.json": "",
+    "img_rules.json": "",
+    "increase_decrease_rules.json": "",
+    "small_rules.json": "",
+    "space_del_rule.json": "",
+    "special-class_rules.json": "",
+    "style-br_rules.json": "",
+    "z_random_rules.json": ""
+  },
+  "zBeta": {
+    "ANKING_CLEAN.json": "",
+    "True-False_rule.json": "",
+    "WIP_fw-350.json": "",
+    "arrow_rules.json": "",
+    "base_rules copy.json": "",
+    "cloze-formatting_rules.json": "",
+    "cloze-splitting_rules.json": "",
+    "complex_rules.json": "",
+    "div_flex-L.json": "",
+    "eg_rule.json": "",
+    "fs-70pc_rule.json": "",
+    "hyper_hypo_rule.json": "",
+    "remove_rules_Example_rules.json": "",
+    "testing_rule2.json": ""
+  }
+}

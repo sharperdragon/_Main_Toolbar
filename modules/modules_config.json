@@ -34,9 +34,10 @@
     "remove_config": {
       "regex": true,
       "flags": "ms",
-      "loop": true
+      "loop": true,
+      "delete_chars": { "max_chars": -1, "count_spaces": false }
     },
-    "max_loops": 30,
+    "max_loops": 10,
     "order_preference": {
       "testing_rules.json": 1,
       "remove_rules.txt": 2,

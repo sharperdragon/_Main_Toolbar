@@ -195,6 +195,11 @@ def subn_until_stable(
     flags: Union[str, int, None] = None,
     max_loops: int = 30,
 ) -> Tuple[str, int, int]:
+    """
+    * Repeatedly apply re.subn until no changes or loop cap reached.
+    - Returns (final_text, total_subs, loops_done).
+    - For loop=False behavior, set max_loops=1.
+    """
     total = 0
     loops = 0
     current = text
@@ -220,6 +225,11 @@ def subn_literal_until_stable(
     *,
     max_loops: int = 30,
 ) -> Tuple[str, int, int]:
+    """
+    * Repeatedly apply a literal (non-regex) find/replace until stable or loop cap.
+    - Returns (final_text, total_subs, loops_done).
+    - Counts substitutions using str.count(find) before each replace.
+    """
     if not find:
         return text, 0, 0
     total = 0
@@ -248,6 +258,11 @@ def apply_substitution(
     flags: Union[str, int, None] = None,
     max_loops: int = 30,
 ) -> Tuple[str, int, int]:
+    """
+    * Convenience router used by engines:
+      - regex path -> subn_until_stable
+      - literal path -> subn_literal_until_stable
+    """
     if is_regex:
         return subn_until_stable(pattern_or_find, replacement, text, flags=flags, max_loops=max_loops)
     return subn_literal_until_stable(pattern_or_find, replacement, text, max_loops=max_loops)
@@ -279,6 +294,13 @@ def deletion_exceeds_limit(
 
 
 def basic_html_cloze_balance_ok(before: str, after: str) -> bool:
+    """
+    * Lightweight structural sanity check for HTML/cloze text.
+    - Ensures cloze delimiters stay balanced and, when they were balanced
+      before, that they remain balanced after.
+    - ! NOTE: <b>...</b> balance is no longer enforced here; rules are free
+      to add/remove bold tags as needed, as long as clozes remain valid.
+    """
     if before == after:
         return True
 

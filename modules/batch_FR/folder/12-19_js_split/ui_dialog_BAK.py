@@ -17,7 +17,6 @@ from ..utils.top_helper import (
 from .dialog_helper import (
     build_initial_context,
     format_rule_options_for_preview,
-    build_rules_panel_html,
 )
 
 
@@ -51,9 +50,11 @@ from aqt.qt import (  # type: ignore[import]
 # ! Styling & layout constants
 # ---------------------------------------------------------------------------
 
-DIALOG_MIN_WIDTH = 700
-DIALOG_MIN_HEIGHT = 700
+DIALOG_MIN_WIDTH = 900
+DIALOG_MIN_HEIGHT = 540
+
 GROUP_LIST_MIN_WIDTH = 180
+
 TREE_COLUMN_WIDTH = 320  # width of rule/alias column in the tree
 
 # Initial widths for [tree, preview] when splitter is used
@@ -70,10 +71,27 @@ INSPECTOR_HEIGHT = 480
 # Base directory for HTML/CSS/JS assets used by the HTML-based dialog
 _GUI_DIR = Path(__file__).resolve().parent
 
-
 def _load_rules_html() -> str:
-    """Backward-compatible wrapper around dialog_helper.build_rules_panel_html()."""
-    return build_rules_panel_html(_GUI_DIR)
+    """
+    Load the rules_panel HTML template and inline the CSS and JS assets.
+
+    The HTML template must contain the placeholders:
+        {{ rules_style }}  - for the contents of style.css (base layout)
+        {{ favs_style }}   - for the contents of fav_style.css (favorites modal)
+        {{ rules_script }} - for the contents of rules_script.js
+    """
+    html_tpl = (_GUI_DIR / "rules_panel.html").read_text(encoding="utf-8")
+
+    # * Load base rules layout CSS and favorites-modal CSS separately
+    rules_css = (_GUI_DIR / "style.css").read_text(encoding="utf-8")
+    favs_css = (_GUI_DIR / "fav_style.css").read_text(encoding="utf-8")
+    js = (_GUI_DIR / "rules_script.js").read_text(encoding="utf-8")
+
+    # Inline assets into the template
+    html = html_tpl.replace("{{ rules_style }}", rules_css)
+    html = html.replace("{{ favs_style }}", favs_css)
+    html = html.replace("{{ rules_script }}", js)
+    return html
 
 
 
@@ -96,10 +114,6 @@ class BatchFRHtmlDialog(QDialog):
         self._rule_files = list(rule_files)
         self._rules_root = rules_root
         self._context = build_initial_context(self._rule_files, self._rules_root)
-
-        # * Merge persisted defaults (group/file selection) into the initial payload
-        #   so the HTML UI can render the saved selections on open.
-        self._merge_persisted_defaults_into_context()
 
         self._result: Optional[Dict[str, Any]] = None
 
@@ -175,9 +189,6 @@ class BatchFRHtmlDialog(QDialog):
         elif command == "toggle_favorite":
             # * Update favorites list on disk
             self._handle_toggle_favorite(data)
-        elif command == "save_default_selection":
-            # * Persist default group + rule-file selections from Settings modal
-            self._handle_save_default_selection(data)
 
     def _send_initial_context(self) -> None:
         """
@@ -338,105 +349,6 @@ class BatchFRHtmlDialog(QDialog):
 
         # * Persist updated favorites back to disk
         _save_rule_favorites(favorites)
-
-
-    # --- Settings defaults persistence -------------------------------------
-    def _defaults_json_path(self) -> Path:
-        """Return the JSON path used to persist Settings default selections."""
-        # gui/ -> batch_FR/ -> json/
-        json_dir = _GUI_DIR.parent / "json"
-        return json_dir / "ui_settings.json"
-
-    def _merge_persisted_defaults_into_context(self) -> None:
-        """Load saved defaults from dedicated JSON and merge into self._context."""
-        cfg_path = self._defaults_json_path()
-        # * One-time migration: older builds used default_selection.json
-        legacy_path = cfg_path.parent / "default_selection.json"
-        if not cfg_path.exists() and legacy_path.exists():
-            try:
-                legacy_raw = legacy_path.read_text(encoding="utf-8")
-                legacy_cfg = json.loads(legacy_raw)
-                if isinstance(legacy_cfg, dict):
-                    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-                    cfg_path.write_text(
-                        json.dumps(legacy_cfg, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-            except Exception:
-                # ! Migration should never break dialog open
-                pass
-        try:
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            return
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
-        if not isinstance(cfg, dict):
-            return
-
-        # File format: { "default_group_names": [...], "default_rule_paths": [...] }
-        merged = dict(self._context.get("defaults") or {})
-        if "default_group_names" in cfg:
-            merged["default_group_names"] = cfg.get("default_group_names")
-        if "default_rule_paths" in cfg:
-            merged["default_rule_paths"] = cfg.get("default_rule_paths")
-
-        self._context["defaults"] = merged
-
-    def _handle_save_default_selection(self, data: Dict[str, Any]) -> None:
-        """Persist Settings modal defaults to dedicated JSON file and refresh UI state."""
-        # JS sends: { default_group_names: [...], default_rule_paths: [...] }
-        raw_groups = data.get("default_group_names")
-        raw_paths = data.get("default_rule_paths")
-
-        # Sanitize to JSON-serializable lists of strings (empty list is valid!).
-        group_names: List[str] = []
-        if isinstance(raw_groups, list):
-            group_names = [str(x) for x in raw_groups if str(x).strip()]
-
-        rule_paths: List[str] = []
-        if isinstance(raw_paths, list):
-            rule_paths = [str(x) for x in raw_paths if str(x).strip()]
-
-        cfg_path = self._defaults_json_path()
-        # Ensure folder exists
-        try:
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            return
-
-        # File format: { "default_group_names": [...], "default_rule_paths": [...] }
-        cfg = {
-            "default_group_names": group_names,
-            "default_rule_paths": rule_paths,
-        }
-
-        try:
-            cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            # If we cannot write, silently fail (do not crash UI)
-            return
-
-        # Update the in-memory context for this dialog session
-        merged = dict(self._context.get("defaults") or {})
-        merged["default_group_names"] = group_names
-        merged["default_rule_paths"] = rule_paths
-        self._context["defaults"] = merged
-
-        # Push defaults back down so JS can re-render with authoritative values.
-        try:
-            payload = json.dumps({
-                "default_group_names": group_names,
-                "default_rule_paths": rule_paths,
-            })
-        except Exception:
-            return
-
-        js = f"window.batchFrSetDefaults && window.batchFrSetDefaults({payload});"
-        self.web.eval(js)
 
     # --- Public API --------------------------------------------------------
 

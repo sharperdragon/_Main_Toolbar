@@ -6,148 +6,70 @@ from html import unescape
 from pathlib import Path
 from datetime import datetime
 import time
-from typing import Optional, Iterable, List, Dict, Any, Tuple
+from typing import Optional, Iterable, List, Dict, Any
 from collections import defaultdict
 from ...log_cleanup import delete_old_anki_log_files
-from .FR_global_utils import now_stamp, md_inline, md_table_cell
+from .FR_global_utils import now_stamp
 
 
+# --- Internal helpers for human-friendly previews ---------------------------
+
+def _scrub_whitespace_tokens_global(pat: str) -> str:
+    """\
+    * Make whitespace tokens a bit more readable in preview strings.
+    - Example: "re:foo\\s*bar" -> "re:foo *bar".
+    """
+    s = str(pat or "")
+    # Show common whitespace tokens in a compact, readable way
+    s = re.sub(r"\\s\*", " *", s)
+    s = re.sub(r"\\s\+", " +", s)
+    s = re.sub(r"\\s\?", " ?", s)
+    s = re.sub(r"\\s", " ␣", s)  # generic \s fallback
+    return s
+
+
+def format_field_re_clause_preview(field: str, display_pat: str) -> str:
+    """\
+    * Format a single field-specific regex clause for preview.
+    - Example: field="Text", display_pat="^foo *bar" -> "\"Text:re:^foo *bar\"".
+    """
+    f = (field or "").strip()
+    return f'"{f}:re:{display_pat}"'
 
 
 # --- Rule provenance helper (for logs/reports) -------------------------------
 
 def rule_prov(rule: dict) -> str:
-    """Small provenance string used in logs.
-
-    Prefers canonical keys added by rules_io (`source_file/source_path`) but falls
-    back to older keys to stay backward compatible.
-    """
-    src = ""
     try:
-        src = str(
-            rule.get("source_file")
-            or rule.get("_source_file")
-            or (Path(str(rule.get("source_path") or "")).name if rule.get("source_path") else "")
-            or (Path(str(rule.get("_source_path") or "")).name if rule.get("_source_path") else "")
-            or (Path(str(rule.get("__source_file") or "")).name if rule.get("__source_file") else "")
-            or "?"
-        )
+        src = Path(str(rule.get("__source_file") or "")).name
     except Exception:
-        src = str(rule.get("source_file") or rule.get("_source_file") or rule.get("__source_file") or "?")
-
+        src = str(rule.get("__source_file") or "?")
     idx = rule.get("__rule_index")
     nm = (rule.get("name") or "").strip()
     base = f"[{src}#{idx}]" if idx is not None else (f"[{src}]" if src else "[?]")
     return f"{base} {nm}" if nm else base
 
 
-# --- Helper: resolve rule source info (path + label) ---
-def _resolve_source_info(raw: Any) -> Tuple[str, str]:
-    """Return (source_path, source_file_label).
-
-    Accepts:
-    - a per-rule dict (or rule dict)
-    - a Path/string
-
-    Prefers `source_path` (full path) when present, but always returns a usable
-    label (usually a filename).
-    """
-    try:
-        # If a dict was passed, pull from canonical + compat keys.
-        if isinstance(raw, dict):
-            sp = raw.get("source_path") or raw.get("_source_path")
-            sf = raw.get("source_file") or raw.get("_source_file")
-            # Historical: __source_file sometimes stored full path
-            hist = raw.get("__source_file")
-
-            if sp:
-                try:
-                    p = Path(str(sp)).expanduser().resolve()
-                    return str(p), (sf or p.name or "?")
-                except Exception:
-                    return str(sp), (sf or Path(str(sp)).name if str(sp) else "?")
-
-            if hist:
-                try:
-                    p = Path(str(hist)).expanduser().resolve()
-                    return str(p), (sf or p.name or "?")
-                except Exception:
-                    return str(hist), (sf or Path(str(hist)).name if str(hist) else "?")
-
-            # Only a filename known
-            if sf:
-                return "", str(sf)
-
-            return "", ""
-
-        # Not a dict: treat as path-like / label
-        if raw is None:
-            return "", ""
-        s = str(raw).strip()
-        if not s:
-            return "", ""
-
-        # If it looks like a path, try to use it as such; otherwise just a label.
-        if "/" in s or "\\" in s or s.endswith(".json") or s.endswith(".txt"):
-            try:
-                p = Path(s).expanduser().resolve()
-                return str(p), (p.name or s)
-            except Exception:
-                return s, (Path(s).name if s else s)
-
-        return "", s
-
-    except Exception:
-        return "", ""
-
-
-def _pick_rule_source(per: Dict[str, Any]) -> Tuple[str, str]:
-    """Resolve a per-rule record's source consistently."""
-    # Prefer per-rule level keys
-    sp, sf = _resolve_source_info(per)
-    if sp or sf:
-        return sp, sf
-
-    # Fall back into embedded rule metadata
-    rule_meta = per.get("rule")
-    if isinstance(rule_meta, dict):
-        sp2, sf2 = _resolve_source_info(rule_meta)
-        if sp2 or sf2:
-            return sp2, sf2
-
-    # Older keys
-    return _resolve_source_info(per.get("file") or per.get("__source_file") or "")
-
-
 # --- Helper: group-aware label for rule file sources ---
-def _log_rule_group_and_name(raw_src: Any, rules_root: Optional[Path]) -> Tuple[str, str, str]:
-    """Return (group, file_name, display_label) for a rule source.
+def _log_rule_group_and_name(raw_src: Any, rules_root: Path | None) -> tuple[str, str, str]:
+    """
+    Return (group, file_name, display_label) for a rule source.
 
     - group: first folder under rules_root, or "" if not applicable
     - file_name: basename of the file
     - display_label: "[group] file_name" if group present, else "file_name"
-
-    Supports raw sources that may be:
-    - full paths (preferred)
-    - filename-only labels (common for TXT remove rules)
     """
-    src_path, src_file = _resolve_source_info(raw_src)
-
-    if not src_path and not src_file:
-        return "", "", "unknown_source"
-
-    # If we only have a filename/label, we cannot compute group reliably.
-    if not src_path:
-        file_name = src_file or "unknown_source"
-        return "", file_name, file_name
+    if not raw_src:
+        return "", "", "<?>"
 
     try:
-        p = Path(str(src_path)).expanduser().resolve()
+        p = Path(str(raw_src)).expanduser().resolve()
     except Exception:
-        file_name = src_file or Path(str(src_path)).name or "unknown_source"
-        return "", file_name, file_name
+        s = str(raw_src)
+        s = s or "<?>"
+        return "", s, s
 
-    file_name = src_file or p.name or "unknown_source"
+    file_name = p.name or "<?>"
 
     if rules_root is None:
         return "", file_name, file_name
@@ -173,20 +95,13 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     """
     # Try several possible locations for the originating rule file
     candidates: list[Any] = [
-        per.get("source_path"),
         per.get("source_file"),
-        per.get("_source_path"),
-        per.get("_source_file"),
         per.get("file"),
         per.get("__source_file"),
     ]
 
     rule_meta = per.get("rule")
     if isinstance(rule_meta, dict):
-        candidates.append(rule_meta.get("source_path"))
-        candidates.append(rule_meta.get("source_file"))
-        candidates.append(rule_meta.get("_source_path"))
-        candidates.append(rule_meta.get("_source_file"))
         candidates.append(rule_meta.get("__source_file"))
         candidates.append(rule_meta.get("file"))
 
@@ -224,6 +139,113 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     return False
 
 
+
+def _effective_fields_for_remove_rule(per: Dict[str, Any], cfg: Any) -> list[str] | None:
+    """Resolve the field list that a remove TXT rule conceptually acts on.
+
+    Precedence:
+    1) per-rule fields
+    2) cfg.fields
+    3) cfg.fields_all
+    """
+    fields = per.get("fields")
+    if isinstance(fields, str):
+        fields = [fields]
+    if fields:
+        return list(fields)
+
+    cfg_fields = getattr(cfg, "fields", None)
+    if isinstance(cfg_fields, str):
+        cfg_fields = [cfg_fields]
+    if cfg_fields:
+        return list(cfg_fields)
+
+    cfg_all = getattr(cfg, "fields_all", None)
+    if isinstance(cfg_all, str):
+        cfg_all = [cfg_all]
+    if cfg_all:
+        return list(cfg_all)
+
+    return None
+
+# --- Helper: expand remove-rule fields for per-field blocks in debug logs ---
+def _iter_remove_rule_fields(per: Dict[str, Any], cfg: Any) -> list[str]:
+    """Return the list of fields for which we should render a separate
+    virtual 'field remove' rule block in the debug markdown.
+    """
+    fields = _effective_fields_for_remove_rule(per, cfg)
+    if not fields:
+        # No specific fields → treat as global remove rule (single block)
+        return []
+    # Normalize and deduplicate
+    norm: list[str] = []
+    seen: set[str] = set()
+    for f in fields:
+        s = str(f).strip()
+        if not s:
+            continue
+        if s not in seen:
+            seen.add(s)
+            norm.append(s)
+    return norm
+
+
+def _build_remove_query_and_search_preview(
+    per: Dict[str, Any],
+    cfg: Any,
+) -> tuple[str, str]:
+    """Build query + search previews for TXT-based remove rules.
+
+    Each line in a remove TXT file is treated as acting on each configured
+    field separately, so we represent it as a field-aware OR clause such as:
+      "Field1:re:<pattern>" OR "Field2:re:<pattern>" ...
+
+    Returns (query_preview, search_preview).
+    """
+    pattern = str(per.get("pattern", "") or "")
+    if not pattern:
+        # Fall back to whatever the engine recorded
+        q = str(per.get("query", "") or "")
+        s = str(per.get("search", "") or "")
+        return q, s
+
+    fields = _effective_fields_for_remove_rule(per, cfg)
+    base = f"re:{pattern}"
+    preview = build_field_or_query_preview(base, fields or [])
+    # For remove-only rules, Browser search should mirror the same field-aware clause
+    return preview, preview
+
+
+def build_field_or_query_preview(pattern: str, fields: list[str] | None) -> str:
+    """
+    $ PREVIEW: Human-friendly line for ACFR/logs.
+      - Global → re:<pattern> after whitespace token scrubbing
+      - Fielded → ( "Field:re:<pattern>" OR ... ) with outer quotes for each clause
+    """
+    pat = str(pattern or "")
+    if pat.startswith("re:"):
+        pat = pat[3:]
+    # Show \s*, \s+, etc. as ' *', ' +' for readability
+    display_pat = _scrub_whitespace_tokens_global("re:" + pat)[3:]
+
+    norm: list[str] = []
+    if fields:
+        for f in fields:
+            s = str(f).strip()
+            if s:
+                norm.append(s)
+    if not norm or any(f.lower() == "all" for f in norm):
+        return f"re:{display_pat}"
+    seen = set()
+    uniq: list[str] = []
+    for f in norm:
+        if f not in seen:
+            uniq.append(f); seen.add(f)
+    clauses = [format_field_re_clause_preview(f, display_pat) for f in uniq]
+    if len(clauses) == 1:
+        # Single field (preview): show bare clause without outer parentheses
+        return clauses[0]
+    return "(" + " OR ".join(clauses) + ")"
 
 
 def _highlight_diff_snippet(
@@ -332,7 +354,7 @@ def _slug_for_filename(label: str) -> str:
 def _write_per_file_debug_logs(
     out_dir: Path,
     ts: str,
-    rules_root: Optional[Path],
+    rules_root: Path | None,
     per_rules: List[Dict[str, Any]],
     dry: bool,
     max_per_file: int,
@@ -350,8 +372,7 @@ def _write_per_file_debug_logs(
             examples = list(per.get("examples") or [])
             if not examples:
                 continue
-            src_path, src_file = _pick_rule_source(per)
-            raw_src = src_path or src_file or ""
+            raw_src = per.get("source_file") or per.get("file") or ""
             _, _, label = _log_rule_group_and_name(raw_src, rules_root)
             if not label:
                 label = "<?>"
@@ -391,9 +412,10 @@ def _write_per_file_debug_logs(
                 else:
                     before_disp, after_disp = before_raw, after_raw
 
-                before_disp = md_table_cell(before_disp)
-                after_disp = md_table_cell(after_disp)
-                fld_disp = md_table_cell(fld)
+                # Keep markdown tables intact by escaping pipes in the content
+                before_disp = before_disp.replace("|", "\\|")
+                after_disp = after_disp.replace("|", "\\|")
+                fld_disp = str(fld).replace("|", "\\|")
 
                 lines.append(
                     f"| {idx} | `{fld_disp}` | `{before_disp}` | `{after_disp}` |"
@@ -409,7 +431,7 @@ def _write_per_file_debug_logs(
 def write_batch_fr_debug(
     report: Dict[str, Any],
     cfg: Any,
-    debug_cfg: Optional[Dict[str, Any]] = None,
+    debug_cfg: Dict[str, Any] | None = None,
 ) -> Optional[Path]:
     """\
     * Emit a markdown debug file summarizing a batch_FR run.
@@ -506,10 +528,6 @@ def write_batch_fr_debug(
         else:
             fr_fields_disp = str(fr_fields or "None")
         lines.append(f"- remove_config.field_remove_fields: {fr_fields_disp}")
-        lines.append(
-            "- remove_rules_logging: TXT-based remove rules (field_remove_rules.txt, *_remove_rules.txt) "
-            "are logged in detail in separate `Remove_FR_Debug__*.md` files."
-        )
         lines.append("")
 
         # Summary section
@@ -546,8 +564,8 @@ def write_batch_fr_debug(
                     label = "<?>"
 
                 err_disp = _format_error_html(err, escape_pipes=True)
-                pat_disp = md_table_cell(pat)
-                rep_disp = md_table_cell(rep)
+                pat_disp = str(pat).replace("|", "\\|")
+                rep_disp = str(rep).replace("|", "\\|")
                 lines.append(f"| {idx} | `{label}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |")
         lines.append("")
 
@@ -559,8 +577,7 @@ def write_batch_fr_debug(
             # Group rules by source file for clearer organization (group-aware)
             grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
             for per in per_rules:
-                src_path, src_file = _pick_rule_source(per)
-                raw_src = src_path or src_file or ""
+                raw_src = per.get("source_file") or per.get("file") or ""
                 _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
                 if not label:
                     label = "<?>"
@@ -573,10 +590,10 @@ def write_batch_fr_debug(
                 lines.append(f"### {label}")
                 lines.append("")
                 if dry:
-                    lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_sum | rm_loops_max | rm_fields_looped | rm_cap_hits | rm_cycle_hits | rm_empty_forced | rm_max_loops | fr_loop | fr_loops_used | fr_break_stable | fr_break_cap | fr_break_cycle | fr_empty_forced |")
+                    lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_used | rm_max_loops |")
                 else:
-                    lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_sum | rm_loops_max | rm_fields_looped | rm_cap_hits | rm_cycle_hits | rm_empty_forced | rm_max_loops | fr_loop | fr_loops_used | fr_break_stable | fr_break_cap | fr_break_cycle | fr_empty_forced |")
-                lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|")
+                    lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_used | rm_max_loops |")
+                lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|")
 
                 for per in rules_for_file:
                     idx = per.get("index", "?")
@@ -591,28 +608,16 @@ def write_batch_fr_debug(
                     guard_skips = per.get("guard_skips", 0)
                     rm_field_subs = per.get("remove_field_subs", 0)
                     rm_loop = per.get("remove_loop", False)
-                    rm_loops_sum = per.get("remove_loops_used_sum", per.get("remove_loops_used", 0))
-                    rm_loops_max = per.get("remove_loops_used_max", 0)
-                    rm_fields_looped = per.get("remove_fields_looped", 0)
-                    rm_cap_hits = per.get("remove_cap_hits", 0)
-                    rm_cycle_hits = per.get("remove_cycle_hits", 0)
-                    rm_empty_forced = per.get("remove_empty_match_forced_single", 0)
+                    rm_loops_used = per.get("remove_loops_used", 0)
                     rm_max_loops = per.get("remove_max_loops", 0)
-
-                    fr_loop = per.get("fr_loop", False)
-                    fr_loops_used = per.get("fr_loops_used", 0)
-                    fr_break_stable = per.get("fr_break_stable", 0)
-                    fr_break_cap = per.get("fr_break_cap", 0)
-                    fr_break_cycle = per.get("fr_break_cycle", 0)
-                    fr_empty_forced = per.get("fr_empty_match_forced_single", 0)
 
                     if dry:
                         lines.append(
-                            f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {would_change} | {subs} | {guard_skips} | {rm_field_subs} | {rm_loop} | {rm_loops_sum} | {rm_loops_max} | {rm_fields_looped} | {rm_cap_hits} | {rm_cycle_hits} | {rm_empty_forced} | {rm_max_loops} | {fr_loop} | {fr_loops_used} | {fr_break_stable} | {fr_break_cap} | {fr_break_cycle} | {fr_empty_forced} |"
+                            f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {would_change} | {subs} | {guard_skips} | {rm_field_subs} | {rm_loop} | {rm_loops_used} | {rm_max_loops} |"
                         )
                     else:
                         lines.append(
-                            f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {changed} | {subs} | {guard_skips} | {rm_field_subs} | {rm_loop} | {rm_loops_sum} | {rm_loops_max} | {rm_fields_looped} | {rm_cap_hits} | {rm_cycle_hits} | {rm_empty_forced} | {rm_max_loops} | {fr_loop} | {fr_loops_used} | {fr_break_stable} | {fr_break_cap} | {fr_break_cycle} | {fr_empty_forced} |"
+                            f"| {idx} | `{fields_disp}` | `{flags}` | {loop} | {matched} | {changed} | {subs} | {guard_skips} | {rm_field_subs} | {rm_loop} | {rm_loops_used} | {rm_max_loops} |"
                         )
 
             # Table 2: error / pattern / replacement (with file column)
@@ -625,16 +630,15 @@ def write_batch_fr_debug(
                 pat = per.get("pattern", "")
                 rep = per.get("replacement", "")
 
-                src_path, src_file = _pick_rule_source(per)
-                raw_src = src_path or src_file or ""
+                raw_src = per.get("source_file") or per.get("file") or ""
                 _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
                 if not label:
                     label = "<?>"
 
                 # Escape pipes so the Markdown table doesn't break
                 err_disp = _format_error_html(err, escape_pipes=True)
-                pat_disp = md_table_cell(pat)
-                rep_disp = md_table_cell(rep)
+                pat_disp = str(pat).replace("|", "\\|")
+                rep_disp = str(rep).replace("|", "\\|")
                 lines.append(
                     f"| {idx} | `{label}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |"
                 )
@@ -652,30 +656,66 @@ def write_batch_fr_debug(
             any_examples = True
             idx = per.get("index", "?")
 
-            # TXT-based remove rules: detailed per-field behavior is logged in Remove_FR_Debug__*.md
+            # TXT-based remove rules: render one block per field
             if _is_remove_rule(per, cfg):
-                lines.append("")
-                lines.append(f"### Rule {idx} (remove TXT)")
-                lines.append("")
                 pattern = str(per.get("pattern", "") or "")
-                lines.append(f"- pattern: `{md_inline(pattern)}`")
-                lines.append(
-                    "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples."
-                )
-                if has_error:
-                    err_html = _format_error_html(per.get("error", ""))
-                    lines.append(f"- error: {err_html}")
-                # No BEFORE/AFTER table here – examples live in the dedicated remove log
-                continue
+                exclude = per.get("exclude", "")
+                # Determine which fields should get their own "virtual" rule block
+                fields_for_blocks = _iter_remove_rule_fields(per, cfg)
+                if not fields_for_blocks:
+                    # No specific fields → single generic remove block
+                    fields_for_blocks = [None]
+
+                for field_name in fields_for_blocks:
+                    lines.append("")
+                    if field_name:
+                        lines.append(f"### *{field_name}* field remove")
+                    else:
+                        lines.append(f"### Rule {idx} (remove)")
+                    lines.append("")
+
+                    field_prefix = f"{field_name}:" if field_name else ""
+                    query = f"{field_prefix}re:{pattern}" if pattern else str(per.get("query", "") or "")
+                    lines.append(f"- query: `{query}`")
+                    lines.append(f"- exclude: `{exclude}`")
+                    # For remove-only rules, Browser search mirrors the same field-specific query
+                    lines.append(f"- search (Browser): `{query}`")
+
+                    if has_error:
+                        err_html = _format_error_html(per.get("error", ""))
+                        lines.append(f"- error: {err_html}")
+                    dc = per.get("delete_chars", {}) or {}
+                    lines.append(
+                        f"- delete guard: max_chars={dc.get('max_chars', 0)}, count_spaces={dc.get('count_spaces', True)}"
+                    )
+                    lines.append("")
+                    lines.append("| field | BEFORE | AFTER |")
+                    lines.append("|---|---|---|")
+
+                    # Only show examples for this field in this block (or all if field_name is None)
+                    for ex in examples:
+                        fld = str(ex.get("field", ""))
+                        if field_name and fld != field_name:
+                            continue
+                        before_raw = str(ex.get("before", ""))
+                        after_raw = str(ex.get("after", ""))
+                        if dry:
+                            before_disp, after_disp = _highlight_diff_snippet(
+                                before_raw, after_raw, max_len=240
+                            )
+                        else:
+                            before_disp, after_disp = before_raw, after_raw
+                        lines.append(f"| `{fld}` | `{before_disp}` | `{after_disp}` |")
+
             else:
                 # Normal rule → keep existing behavior
                 lines.append("")
                 lines.append(f"### Rule {idx}")
                 lines.append("")
-                lines.append(f"- query: `{md_inline(per.get('query', ''))}`")
-                lines.append(f"- exclude: `{md_inline(per.get('exclude', ''))}`")
+                lines.append(f"- query: `{per.get('query', '')}`")
+                lines.append(f"- exclude: `{per.get('exclude', '')}`")
                 if has_search:
-                    lines.append(f"- search (Browser): `{md_inline(per.get('search', ''))}`")
+                    lines.append(f"- search (Browser): `{per.get('search', '')}`")
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))
                     lines.append(f"- error: {err_html}")
@@ -696,9 +736,7 @@ def write_batch_fr_debug(
                         )
                     else:
                         before_disp, after_disp = before_raw, after_raw
-                    lines.append(
-                        f"| `{md_table_cell(fld)}` | `{md_table_cell(before_disp)}` | `{md_table_cell(after_disp)}` |"
-                    )
+                    lines.append(f"| `{fld}` | `{before_disp}` | `{after_disp}` |")
 
         if not any_examples:
             lines.append("")
@@ -744,7 +782,7 @@ def write_batch_fr_debug(
 def write_regex_debug(
     report: Dict[str, Any],
     cfg: Any,
-    debug_cfg: Optional[Dict[str, Any]] = None,
+    debug_cfg: Dict[str, Any] | None = None,
 ) -> Optional[Path]:
     """\
     * Emit a markdown debug file focused on regex-heavy rules and errors.
@@ -869,13 +907,12 @@ def write_regex_debug(
 
         def _rule_source_name(raw_src: Any) -> str:
             _, _, label = _log_rule_group_and_name(raw_src, rules_root)
-            return label or "unknown_source"
+            return label
 
         # Valid regex rules
         for per in regex_rules:
             idx = per.get("index", "?")
-            src_path, src_file = _pick_rule_source(per)
-            raw_src = src_path or src_file or ""
+            raw_src = per.get("file") or per.get("source_file") or ""
             src = _rule_source_name(raw_src)
             err = str(per.get("error") or "").strip()
             compile_status = "error" if err else "ok"
@@ -884,8 +921,8 @@ def write_regex_debug(
             rep = str(per.get("replacement") or "")
 
             err_disp = _format_error_html(err, escape_pipes=True)
-            pat_disp = md_table_cell(pat)
-            rep_disp = md_table_cell(rep)
+            pat_disp = pat.replace("|", "\\|")
+            rep_disp = rep.replace("|", "\\|")
 
             lines.append(
                 f"| {idx} | `{src}` | {compile_status} | {matches} | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |"
@@ -902,8 +939,8 @@ def write_regex_debug(
             rep = str(rule.get("replacement") or "")
 
             err_disp = _format_error_html(err, escape_pipes=True)
-            pat_disp = md_table_cell(pat)
-            rep_disp = md_table_cell(rep)
+            pat_disp = pat.replace("|", "\\|")
+            rep_disp = rep.replace("|", "\\|")
 
             lines.append(
                 f"| {idx} | `{src}` | error | — | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |"
@@ -925,27 +962,56 @@ def write_regex_debug(
             idx = per.get("index", "?")
 
             if _is_remove_rule(per, cfg):
-                lines.append("")
-                lines.append(f"### Rule {idx} (remove TXT)")
-                lines.append("")
+                # TXT-based remove rule → one block per field
                 pattern = str(per.get("pattern", "") or "")
-                lines.append(f"- pattern: `{md_inline(pattern)}`")
-                lines.append(
-                    "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples."
-                )
-                if has_error:
-                    err_html = _format_error_html(per.get("error", ""))
-                    lines.append(f"- error: {err_html}")
-                # No per-field examples here – those are in the dedicated remove log
-                continue
+                exclude = per.get("exclude", "")
+                fields_for_blocks = _iter_remove_rule_fields(per, cfg)
+                if not fields_for_blocks:
+                    fields_for_blocks = [None]
+
+                for field_name in fields_for_blocks:
+                    lines.append("")
+                    if field_name:
+                        lines.append(f"### *{field_name}* field remove")
+                    else:
+                        lines.append(f"### Rule {idx} (remove)")
+                    lines.append("")
+
+                    field_prefix = f"{field_name}:" if field_name else ""
+                    query = f"{field_prefix}re:{pattern}" if pattern else str(per.get("query", "") or "")
+                    lines.append(f"- query: `{query}`")
+                    lines.append(f"- exclude: `{exclude}`")
+                    # For remove-only rules, Browser search mirrors the same field-specific query
+                    lines.append(f"- search (Browser): `{query}`")
+
+                    if has_error:
+                        err_html = _format_error_html(per.get("error", ""))
+                        lines.append(f"- error: {err_html}")
+                    lines.append("")
+                    lines.append("| field | BEFORE | AFTER |")
+                    lines.append("|---|---|---|")
+
+                    for ex in examples:
+                        fld = str(ex.get("field", ""))
+                        if field_name and fld != field_name:
+                            continue
+                        before_raw = str(ex.get("before", ""))
+                        after_raw = str(ex.get("after", ""))
+                        if dry:
+                            before_disp, after_disp = _highlight_diff_snippet(
+                                before_raw, after_raw, max_len=240
+                            )
+                        else:
+                            before_disp, after_disp = before_raw, after_raw
+                        lines.append(f"| `{fld}` | `{before_disp}` | `{after_disp}` |")
             else:
                 lines.append("")
                 lines.append(f"### Rule {idx}")
                 lines.append("")
-                lines.append(f"- query: `{md_inline(per.get('query', ''))}`")
-                lines.append(f"- exclude: `{md_inline(per.get('exclude', ''))}`")
+                lines.append(f"- query: `{per.get('query', '')}`")
+                lines.append(f"- exclude: `{per.get('exclude', '')}`")
                 if has_search:
-                    lines.append(f"- search (Browser): `{md_inline(per.get('search', ''))}`")
+                    lines.append(f"- search (Browser): `{per.get('search', '')}`")
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))
                     lines.append(f"- error: {err_html}")
@@ -963,9 +1029,7 @@ def write_regex_debug(
                         )
                     else:
                         before_disp, after_disp = before_raw, after_raw
-                    lines.append(
-                        f"| `{md_table_cell(fld)}` | `{md_table_cell(before_disp)}` | `{md_table_cell(after_disp)}` |"
-                    )
+                    lines.append(f"| `{fld}` | `{before_disp}` | `{after_disp}` |")
 
         if not any_examples:
             lines.append("")

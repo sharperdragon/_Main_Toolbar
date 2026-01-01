@@ -1,6 +1,5 @@
 [
     {
-        "query": "re:<b>(\\}\\}.*?)</b>",
         "pattern": "<b>(\\}\\}.*?)</b>",
         "replacement": "$1",
         "loop": true,
@@ -8,7 +7,6 @@
         "delete_chars": {"max_chars": 0, "count_spaces": true}
     },    
     {
-        "query": "re:<b>(\\w*\\s*\\{\\{[^\\}]+?\\}\\}\\s*-*\\w*)</b>",
         "pattern": "<b>(\\w*\\s*\\{\\{[^\\}]+?\\}\\}\\s*-*\\w*)</b>",
         "replacement": "$1",
         "loop": true,
@@ -16,7 +14,13 @@
         "delete_chars": {"max_chars": 0, "count_spaces": true}
     },
     {
-        "query": "re:(\\{\\{[^\\}]*?)<b>([^\\}]*?\\}\\})",
+        "pattern": "<b>(\\w*\\s*\\{\\{[^\\}]+?\\}\\}\\s*-*\\w*)</b>",
+        "replacement": "$1",
+        "loop": true,
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 0, "count_spaces": true}
+    },
+    {
         "pattern": "(\\{\\{[^\\}]*?)<b>([^\\}]*?\\}\\})",
         "replacement": "$1$2",
         "loop": true,
@@ -24,9 +28,15 @@
         "delete_chars": {"max_chars": 3, "count_spaces": true}
     },
     {
-        "query": "re:<b>([^\\}]+?)((\\s\\{\\{[^\\}]*?)([^\\}]*?\\}\\}))</b>",
-        "pattern": "<b>([^\\}]+?)((\\s\\{\\{[^\\}]*?)([^\\}]*?\\}\\}))</b>",
-        "replacement": "<b>$1</b> $2",
+        "pattern": "<b>(\\{\\{[^\\}]+?\\}\\}\\s+)",
+        "replacement": "$1<b>",
+        "loop": true,
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 0, "count_spaces": true}
+    },
+    {
+        "pattern": "(\\{\\{[^\\}]+?\\}\\}(?:,|;|:)*)</b>",
+        "replacement": "</b>$1",
         "loop": true,
         "fields": ["Text"],
         "delete_chars": {"max_chars": 0, "count_spaces": true}

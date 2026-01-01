@@ -24,5 +24,25 @@
       "Text"
     ],
     "delete_chars": { "max_chars": 0, "count_spaces": true}
+  },
+  {
+    "pattern": "(\\{\\{c\\d)::(hyper)(\\w+(::[^\\}]+?)*\\}})",
+    "replacement": "$1::<span class=\"hyper\">$2</span>$3",
+    "regex": true,
+    "loop": false,
+    "fields": [
+      "Text"
+    ],
+    "delete_chars": { "max_chars": 0, "count_spaces": true}
+  },
+  {
+    "pattern": "(\\{\\{c\\d)::(hypo)(\\w+(::[^\\}]+?)*\\}})",
+    "replacement": "$1::<span class=\"hypo\">$2</span>$3",
+    "regex": true,
+    "loop": false,
+    "fields": [
+      "Text"
+    ],
+    "delete_chars": { "max_chars": 0, "count_spaces": true}
   }
 ]

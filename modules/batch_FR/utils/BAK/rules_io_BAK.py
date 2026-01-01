@@ -11,11 +11,7 @@ import re
 import os
 import logging
 
-from .FR_global_utils import (
-    TS_FORMAT, MODULES_CONFIG_PATH, 
-    FIELD_REMOVE_RULES_PATH,
-    RULES_PATH, 
-    )
+from .FR_global_utils import TS_FORMAT
 
 
 # =========================
@@ -133,22 +129,11 @@ def _attach_provenance(
     """
     r = dict(rule)
     try:
-        sp = Path(source_path).expanduser().resolve()
-        # Canonical keys (preferred)
-        r["source_file"] = sp.name
-        r["source_path"] = str(sp)
-
-        # Back-compat keys (older logger/engine expectations)
-        r["_source_file"] = r["source_file"]
-        r["_source_path"] = r["source_path"]
-
-        # Historical provenance keys kept for diagnostics
-        r["__source_file"] = r["source_path"]
+        r["__source_file"] = str(source_path)
         r["__source_index"] = int(idx)
     except Exception:
         # Be defensive; failing provenance must not break rule loading.
         pass
-
     # Preserve any explicit name the user set on the rule.
     if "name" in rule:
         r["name"] = rule["name"]
@@ -471,18 +456,8 @@ def shape_remove_patterns_to_rules(
     patterns: List[str],
     defaults: Optional[Dict[str, Any]] = None,
     fields_all: Optional[List[str]] = None,
-    *,
-    source_path: Optional[Union[str, Path]] = None,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    sp: Optional[Path] = None
-    if source_path is not None:
-        try:
-            sp = Path(source_path).expanduser().resolve()
-        except Exception:
-            sp = None
-
-    idx_in_file = 0
     for line in patterns:
         base = {
             "query": "",
@@ -496,11 +471,7 @@ def shape_remove_patterns_to_rules(
                 "delete_chars", {"max_chars": 0, "count_spaces": True}
             ),
         }
-        idx_in_file += 1
-        norm = normalize_rule(base, defaults, fields_all)
-        if sp is not None:
-            norm = _attach_provenance(norm, sp, idx_in_file)
-        out.append(norm)
+        out.append(normalize_rule(base, defaults, fields_all))
     return out
 
 
@@ -555,6 +526,7 @@ def load_remove_sets_from_config(
 ) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
     defaults = (cfg.get("remove_config") or {}).copy()
+    # Ensure sensible defaults if remove_config is missing keys
     if "flags" not in defaults or not defaults.get("flags"):
         defaults["flags"] = "ms"  # multiline + dotall is safer for remove
     if "loop" not in defaults:
@@ -565,12 +537,16 @@ def load_remove_sets_from_config(
         defaults["delete_chars"] = {"max_chars": 0, "count_spaces": True}
 
     fields_all = cfg.get("fields_all", [])
+
+    # Start from any explicit paths, if given
     remove_path = cfg.get("remove_path")
     field_remove_path = cfg.get("field_remove_path")
+
     rules_root = cfg.get("rules_path")
     remove_suffix = cfg.get("remove_rules_suffix")
     field_remove_name = cfg.get("field_remove_rules_name")
 
+    # Collect all global remove files
     remove_paths: List[Path] = []
     seen_remove: set[str] = set()
 
@@ -579,6 +555,8 @@ def load_remove_sets_from_config(
         if s not in seen_remove:
             seen_remove.add(s)
             remove_paths.append(p)
+
+    # Discover files under rules_root that match the configured suffix
     if rules_root and remove_suffix:
         base = Path(rules_root).expanduser()
         if base.exists() and base.is_dir():
@@ -588,10 +566,14 @@ def load_remove_sets_from_config(
                     if p.is_file():
                         _add_remove_path(p.resolve())
             except Exception as e:
+                # ! Discovery failures should not crash the add-on; log and continue
                 log_warning(f"load_remove_sets_from_config rglob failed for {base}: {e}")
+
+    # Optional explicit single remove_path for backwards compat / overrides
     if remove_path:
         _add_remove_path(Path(remove_path).expanduser().resolve())
 
+    # Resolve the field-remove file path from config if needed
     if not field_remove_path and rules_root and field_remove_name:
         base = Path(rules_root).expanduser()
         field_remove_path = str((base / field_remove_name).resolve())
@@ -601,23 +583,16 @@ def load_remove_sets_from_config(
         for p in remove_paths:
             pats = load_remove_patterns(p)
             all_remove_rules.extend(
-                shape_remove_patterns_to_rules(
-                    pats,
-                    defaults,
-                    fields_all,
-                    source_path=p,
-                )
+                shape_remove_patterns_to_rules(pats, defaults, fields_all)
             )
         out["remove"] = all_remove_rules
 
     if field_remove_path:
         pats = load_remove_patterns(field_remove_path)
         out["field_remove"] = shape_remove_patterns_to_rules(
-            pats,
-            defaults,
-            fields_all,
-            source_path=field_remove_path,
+            pats, defaults, fields_all
         )
+
     return out
 
 
@@ -628,6 +603,7 @@ def read_text(path: Path, encoding: str = "utf-8") -> str:
     if not path.exists():
         return ""
     txt = path.read_text(encoding=encoding)
+    # Strip UTF-8 BOM if present
     if txt.startswith("\ufeff"):
         txt = txt.lstrip("\ufeff")
     return txt
@@ -637,7 +613,9 @@ def strip_comments(s: str) -> str:
     """* Remove // and /* */ comments from JSON-like text (best-effort)."""
     if not s:
         return ""
+    # Remove /* ... */
     s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+    # Remove // ... endline
     s = re.sub(r"(^|\s)//.*?$", r"\1", s, flags=re.MULTILINE)
     return s
 

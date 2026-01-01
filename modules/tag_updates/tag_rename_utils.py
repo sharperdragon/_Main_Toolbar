@@ -181,6 +181,85 @@ def _rename_tag_token(tag: str, old: str, new: str) -> str:
     return tag
 
 
+# =========================
+# Fast-path builders
+# =========================
+
+def build_substring_pairs_from_prefixes(
+    prefixes: Sequence[str],
+    old_sub: str,
+    new_sub: str,
+    *,
+    src: str = "json",
+    kind: str = "regex",
+) -> List[Pair]:
+    """Build Pair(old,new) renames by doing a literal substring swap on known prefixes.
+
+    Why:
+      - For common conversions like `_and_` -> `_&_`, using regex over tens of thousands
+        of prefixes can be slow.
+      - This produces the exact same mapping with far less overhead.
+
+    Notes:
+      - Operates on *prefixes* (tag paths like `A`, `A::B`, `A::B::C`) rather than
+        raw note fields.
+      - Caller should run `compress_parent_ops(...)` to avoid renaming children when
+        a parent rename already exists.
+    """
+    out: List[Pair] = []
+    if not prefixes or not old_sub:
+        return out
+
+    for pref in prefixes:
+        if old_sub not in pref:
+            continue
+        new_pref = _norm_tag(pref.replace(old_sub, new_sub))
+        if new_pref == pref:
+            continue
+        out.append(Pair(old=pref, new=new_pref, src=src, kind=kind))
+
+    return out
+
+
+def compress_parent_ops(pairs: Sequence[Pair]) -> List[Pair]:
+    """Remove redundant child renames when a parent rename already exists.
+
+    Example:
+      - If we rename `A_and_B` -> `A_&_B`, then `A_and_B::x` will move automatically.
+        Renaming both is wasted work and can make runs feel like they "take forever".
+
+    Implementation:
+      - Keep the first mapping for each `old`
+      - Sort shallow-to-deep and drop any `old` that has an ancestor also being renamed
+      - Preserve original Pair metadata (src/kind)
+    """
+    if not pairs:
+        return []
+
+    old_to_pair: Dict[str, Pair] = {}
+    for p in pairs:
+        if p.old not in old_to_pair:
+            old_to_pair[p.old] = p
+
+    olds: Set[str] = set(old_to_pair.keys())
+
+    def _has_renamed_ancestor(tag: str) -> bool:
+        parts = tag.split("::")
+        for i in range(len(parts) - 1, 0, -1):
+            ancestor = "::".join(parts[:i])
+            if ancestor in olds:
+                return True
+        return False
+
+    kept: List[Pair] = []
+    for old in sorted(olds, key=lambda t: t.count("::")):
+        if _has_renamed_ancestor(old):
+            continue
+        kept.append(old_to_pair[old])
+
+    return kept
+
+
 
 def _sanitize_parent_only(pattern: str, replacement: str) -> tuple[str, str, bool]:
     """
@@ -292,4 +371,5 @@ __all__ = [
     "_rename_tag_token", "_sanitize_parent_only", "_compute_prefixes",
     "_first_segment", "_looks_literal_segment",
     "has_left_path_capture", "inject_left_path_capture", "bump_replacement_groups",
+    "build_substring_pairs_from_prefixes", "compress_parent_ops",
 ]

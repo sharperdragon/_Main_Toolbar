@@ -25,8 +25,8 @@ class ConfigDialog(QDialog):
             self.setWindowModality(Qt.WindowModality.ApplicationModal)
         else:
             # * Qt5: legacy enum names
-            self.setWindowFlags(Qt.Window)
-            self.setWindowModality(Qt.ApplicationModal)
+            self.setWindowFlags(Qt.WindowType.Window)
+            self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
         self.resize(900, 600)
 
@@ -38,7 +38,7 @@ class ConfigDialog(QDialog):
         if qtmajor >= 6:
             splitter = QSplitter(Qt.Orientation.Horizontal)
         else:
-            splitter = QSplitter(Qt.Horizontal)
+            splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left panel: README viewer
         left_panel = QWidget()
@@ -57,7 +57,7 @@ class ConfigDialog(QDialog):
 
         config_label = QLabel("config.json")
         self.config_editor = QTextEdit()
-        self.config_editor.setLineWrapMode(QTextEdit.NoWrap)
+        self.config_editor.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
 
         right_layout.addWidget(config_label)
         right_layout.addWidget(self.config_editor)

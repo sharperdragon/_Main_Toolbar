@@ -21,7 +21,10 @@
         <aside id="groups-panel">
           <div id="groups-header">
             <h3>Groups</h3>
-            <button id="favorites-btn" title="Manage favorites">Favorites</button>
+            <div>
+              <button id="settings-btn" title="Default selections">Settings</button>
+              <button id="favorites-btn" title="Manage favorites">Favorites</button>
+            </div>
           </div>
           <div id="groups-list"></div>
         </aside>
@@ -107,6 +110,57 @@
       </div>
     </div>
 
+    <!-- Settings modal -->
+    <div id="settings-modal" class="settings-modal hidden">
+      <div class="settings-backdrop"></div>
+      <div class="settings-panel">
+        <div class="settings-header">
+          <span class="settings-title">Settings</span>
+          <button class="settings-close" id="settings-close-btn">✕</button>
+        </div>
+
+        <div class="settings-body">
+          <div class="settings-tabs">
+            <button type="button" class="settings-tab is-active" data-tab="groups">Default groups</button>
+            <button type="button" class="settings-tab" data-tab="rules">Default rule files</button>
+          </div>
+
+          <!-- TAB: Groups (checkbox list) -->
+          <section class="settings-tab-panel is-active" data-panel="groups">
+            <h4>Default groups on open</h4>
+            <div class="settings-help">Checked groups will be selected automatically when this window opens.</div>
+
+            <div class="settings-list-wrap">
+              <ul class="settings-checklist" id="settings-groups-checklist">
+                <!-- Populated dynamically from JS (checkbox rows) -->
+              </ul>
+            </div>
+          </section>
+
+          <!-- TAB: Rules (tree-like list + filter + select all/none) -->
+          <section class="settings-tab-panel" data-panel="rules">
+            <h4>Default rule files on open</h4>
+            <div class="settings-help">Checked rule files will be selected automatically when this window opens.</div>
+
+            <div class="settings-toolbar">
+              <input id="settings-rules-filter" type="text" placeholder="Filter rule files…" />
+              <button type="button" id="settings-rules-select-all">Select all</button>
+              <button type="button" id="settings-rules-select-none">Select none</button>
+            </div>
+
+            <div class="settings-files-wrap" id="settings-files-container">
+              <!-- Populated dynamically from JS (folder/file tree with checkboxes) -->
+            </div>
+          </section>
+        </div>
+
+        <div class="settings-footer">
+          <button id="settings-cancel">Cancel</button>
+          <button id="settings-save">Save</button>
+        </div>
+      </div>
+    </div>
+
   <div id="footer">
     <label><input type="radio" name="mode" value="dry" checked /> Dry run</label>
     <label><input type="radio" name="mode" value="live" /> Apply changes</label>
@@ -116,6 +170,7 @@
     <button id="cancel-btn">Cancel</button>
     <button id="ok-btn">Run</button>
   </div>
+</div>
 
   <!-- JS will be inlined by the Python builder -->
   <script>
