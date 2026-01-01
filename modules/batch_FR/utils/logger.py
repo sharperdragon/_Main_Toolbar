@@ -204,8 +204,8 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     if not src_name:
         return False
 
-    # Heuristic: any file with "remove_rules" in the name is considered TXT-based remove
-    if "remove_rules" in src_name:
+    # Heuristic: TXT remove-rule files end with these exact suffixes
+    if src_name.endswith("_remove_rule.txt") or src_name.endswith("_remove_rules.txt"):
         return True
 
     # Respect configured names/suffixes when present
@@ -506,9 +506,10 @@ def write_batch_fr_debug(
         else:
             fr_fields_disp = str(fr_fields or "None")
         lines.append(f"- remove_config.field_remove_fields: {fr_fields_disp}")
+        # TXT-based remove-rule files: a dedicated Remove_FR_Debug is written when such a file is selected.
         lines.append(
-            "- remove_rules_logging: TXT-based remove rules (field_remove_rules.txt, *_remove_rules.txt) "
-            "are logged in detail in separate `Remove_FR_Debug__*.md` files."
+            "- remove_rules_logging: a dedicated `Remove_FR_Debug__*.md` is written when the selected rule files "
+            "include a TXT remove-rule file ending with `_remove_rule.txt` or `_remove_rules.txt`."
         )
         lines.append("")
 
@@ -660,7 +661,8 @@ def write_batch_fr_debug(
                 pattern = str(per.get("pattern", "") or "")
                 lines.append(f"- pattern: `{md_inline(pattern)}`")
                 lines.append(
-                    "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples."
+                    "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples "
+                    "(written when a selected rule file ends with `_remove_rule(s).txt`)."
                 )
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))
@@ -931,7 +933,8 @@ def write_regex_debug(
                 pattern = str(per.get("pattern", "") or "")
                 lines.append(f"- pattern: `{md_inline(pattern)}`")
                 lines.append(
-                    "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples."
+                    "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples "
+                    "(written when a selected rule file ends with `_remove_rule(s).txt`)."
                 )
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))

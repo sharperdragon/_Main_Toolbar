@@ -88,10 +88,35 @@ def _loop_substitution_with_cycle_guard(
 from .FR_global_utils import RunConfig, load_field_remove_rules, md_inline, md_table_cell, anki_query_escape_controls
 
 # Optional: used only for query-audit logging (safe fallback if unavailable)
+
 try:
     from aqt import mw  # type: ignore
 except Exception:  # pragma: no cover
     mw = None  # type: ignore
+
+
+# ---------------------------------------------------------------------
+# Remove-rule file selection helpers
+# ---------------------------------------------------------------------
+
+def is_remove_rule_filename(path_or_name: Any) -> bool:
+    """Return True if the selected file is a TXT remove-rule file by name.
+
+    We treat a file as a remove-rule TXT file if its *filename* ends with:
+      - `_remove_rule.txt`  OR
+      - `_remove_rules.txt`
+
+    This is used for deciding whether to write a dedicated `Remove_FR_Debug__*.md`
+    for the run (written once at the end, not per note/field).
+    """
+    if path_or_name is None:
+        return False
+    try:
+        name = Path(str(path_or_name)).name
+    except Exception:
+        name = str(path_or_name)
+    name = name.strip().lower()
+    return name.endswith("_remove_rule.txt") or name.endswith("_remove_rules.txt")
 
 
 
@@ -248,6 +273,8 @@ class RemoveRunContext:
     timestamp_str: str
     field_source_file: str
     field_target_fields: List[str]
+    # ? Guard: ensure we only write Remove_FR_Debug once per run (not per note/field)
+    debug_written: bool = False
 
 
 @dataclass
@@ -541,6 +568,44 @@ def build_remove_context(
 
 
 # High-level wrapper for engine.py to call as the single entrypoint for remove rules
+
+# Write-once remove debug helper for engine.py (end-of-run)
+def maybe_write_remove_debug_for_selection(
+    ctx: RemoveContext,
+    *,
+    selected_files: List[Any],
+    log_dir: Optional[Union[str, Path]],
+) -> Optional[Path]:
+    """Write Remove_FR_Debug once if a remove-rule TXT file was selected.
+
+    - Trigger: any selected filename ends with `_remove_rule.txt` or `_remove_rules.txt`.
+    - Writes at most once per run (uses ctx.run_ctx.debug_written guard).
+    - This must be called from engine.py (end-of-run), not per note/field.
+    """
+    if ctx is None or ctx.run_ctx is None:
+        return None
+    if ctx.run_ctx.debug_written:
+        return None
+    if not log_dir:
+        return None
+
+    try:
+        should_write = any(is_remove_rule_filename(f) for f in (selected_files or []))
+    except Exception:
+        should_write = False
+
+    if not should_write:
+        return None
+
+    try:
+        p = write_remove_debug_md(ctx, log_dir)
+        if p is not None:
+            ctx.run_ctx.debug_written = True
+        return p
+    except Exception:
+        return None
+
+
 def run_remove_for_field(
     text: str,
     field_name: Optional[str],
@@ -553,7 +618,6 @@ def run_remove_for_field(
     field_remove_rules: Optional[Union[str, Path]] = None,
     log_dir: Optional[Union[str, Path]] = None,
 ) -> tuple[str, RemoveContext]:
-
 
     # Build context on first use if not provided
     if ctx is None:
@@ -571,20 +635,6 @@ def run_remove_for_field(
         ctx=ctx,
         per=per,
     )
-
-    # Write remove-only debug when extensive debug is enabled (or batch_fr_debug),
-    # even if engine/UI didn't pass log_dir explicitly.
-    effective_log_dir = log_dir
-    if effective_log_dir is None:
-        if per.get("extensive_debug") or cfg_snapshot.get("batch_fr_debug"):
-            effective_log_dir = cfg_snapshot.get("log_dir")
-
-    if effective_log_dir is not None:
-        try:
-            write_remove_debug_md(ctx, effective_log_dir)
-        except Exception:
-            # Logging must never break the main pipeline
-            pass
 
     return new_text, ctx
 

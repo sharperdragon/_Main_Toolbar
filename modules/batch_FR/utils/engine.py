@@ -40,7 +40,7 @@ from .FR_global_utils import (
     _norm_path,
 )
 
-from .remove_runner import run_remove_for_field, build_remove_context
+from .remove_runner import run_remove_for_field, build_remove_context, maybe_write_remove_debug_for_selection
 
 
 # ---------------------------------------------------------------------
@@ -166,6 +166,8 @@ def run_batch_find_replace(
     # 1) Discover + load rules (deterministic; honors order_preference, Defaults)
     cfg_dict: Dict[str, Any] = dict(config_snapshot)
     rules: List[Dict[str, Any]] = []
+    # Selected rule files from UI (used to decide whether to write Remove_FR_Debug)
+    selected_files: List[Any] = list(rules_files) if rules_files is not None else []
 
     if rules_files is not None:
         # * When a subset of rule files is provided (e.g. from the toolbar UI),
@@ -323,6 +325,7 @@ def run_batch_find_replace(
                 field_remove_rules=field_remove_rules,
                 dry=dry,
                 notes_limit=notes_limit,
+                selected_files=selected_files,
             )
 
         # No global remove-only query supplied; if the selection is remove-only,
@@ -338,6 +341,7 @@ def run_batch_find_replace(
                 field_remove_rules=field_remove_rules,
                 dry=dry,
                 notes_limit=notes_limit,
+                selected_files=selected_files,
             )
 
     for idx, rule in enumerate(ready, start=1):
@@ -444,16 +448,41 @@ def run_batch_find_replace(
 
     # 7) Optional markdown debug files
     debug_cfg = dict(config_snapshot.get("batch_fr_debug", {}) or {})
+    debug_enabled = bool(debug_cfg.get("enabled")) or extensive_debug
+
     if extensive_debug:
         # * In extensive-debug mode, allow more examples per rule (default 60)
         debug_cfg.setdefault("max_examples_per_rule", extensive_debug_max_examples)
-    debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-    if debug_path is not None:
-        report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
 
-    regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-    if regex_debug_path is not None:
-        report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
+    if debug_enabled:
+        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
+        if debug_path is not None:
+            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
+
+        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
+        if regex_debug_path is not None:
+            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
+
+    # Write dedicated remove debug log once per run when a remove-rule TXT file was selected.
+    if selected_files:
+        # If remove_ctx was never created (e.g., no notes/fields processed), build it so the log can still be written.
+        if remove_ctx is None:
+            try:
+                remove_ctx = build_remove_context(
+                    cfg=cfg,
+                    cfg_snapshot=cfg_dict,
+                    remove_rules=remove_rules,
+                    field_remove_rules=field_remove_rules,
+                )
+            except Exception:
+                remove_ctx = None
+
+        if remove_ctx is not None:
+            _ = maybe_write_remove_debug_for_selection(
+                remove_ctx,
+                selected_files=selected_files,
+                log_dir=cfg.log_dir or cfg_dict.get("log_dir"),
+            )
 
     return report
 
@@ -469,6 +498,7 @@ def _run_remove_only_batch(
     field_remove_rules: Optional[Union[str, Path]],
     dry: bool,
     notes_limit: Optional[int],
+    selected_files: Optional[Sequence[Any]],
 ) -> Dict[str, Any]:
     """Run a remove-only batch over notes matching ``search_str``.
 
@@ -651,19 +681,42 @@ def _run_remove_only_batch(
 
     debug_cfg = dict(cfg_snapshot.get("batch_fr_debug", {}) or {})
     extensive_debug = bool(report.get("extensive_debug", False))
+    debug_enabled = bool(debug_cfg.get("enabled")) or extensive_debug
+
     if extensive_debug:
         debug_cfg.setdefault(
             "max_examples_per_rule",
             int(report.get("extensive_debug_max_examples", 60)),
         )
 
-    debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-    if debug_path is not None:
-        report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
+    if debug_enabled:
+        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
+        if debug_path is not None:
+            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
 
-    regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-    if regex_debug_path is not None:
-        report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
+        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
+        if regex_debug_path is not None:
+            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
+
+    # Write dedicated remove debug log once per run when a remove-rule TXT file was selected.
+    if selected_files:
+        if remove_ctx is None:
+            try:
+                remove_ctx = build_remove_context(
+                    cfg=cfg,
+                    cfg_snapshot=cfg_snapshot,
+                    remove_rules=remove_rules,
+                    field_remove_rules=field_remove_rules,
+                )
+            except Exception:
+                remove_ctx = None
+
+        if remove_ctx is not None:
+            _ = maybe_write_remove_debug_for_selection(
+                remove_ctx,
+                selected_files=list(selected_files),
+                log_dir=cfg.log_dir or cfg_snapshot.get("log_dir"),
+            )
 
     return report
 
@@ -679,6 +732,7 @@ def _run_remove_rules_only_batch(
     field_remove_rules: Optional[Union[str, Path]],
     dry: bool,
     notes_limit: Optional[int],
+    selected_files: Optional[Sequence[Any]],
 ) -> Dict[str, Any]:
     """
     Run a remove-only batch driven by the selected TXT remove rules.
@@ -855,19 +909,30 @@ def _run_remove_rules_only_batch(
 
     debug_cfg = dict(cfg_snapshot.get("batch_fr_debug", {}) or {})
     extensive_debug = bool(report.get("extensive_debug", False))
+    debug_enabled = bool(debug_cfg.get("enabled")) or extensive_debug
+
     if extensive_debug:
         debug_cfg.setdefault(
             "max_examples_per_rule",
             int(report.get("extensive_debug_max_examples", 60)),
         )
 
-    debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-    if debug_path is not None:
-        report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
+    if debug_enabled:
+        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
+        if debug_path is not None:
+            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
 
-    regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-    if regex_debug_path is not None:
-        report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
+        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
+        if regex_debug_path is not None:
+            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
+
+    # Write dedicated remove debug log once per run when a remove-rule TXT file was selected.
+    if selected_files and remove_ctx is not None:
+        _ = maybe_write_remove_debug_for_selection(
+            remove_ctx,
+            selected_files=list(selected_files),
+            log_dir=cfg.log_dir or cfg_snapshot.get("log_dir"),
+        )
 
     return report
 
