@@ -110,7 +110,7 @@ class BatchFRHtmlDialog(QDialog):
     # --- HTML UI scaffold --------------------------------------------------
 
     def _build_html_ui(self) -> None:
-        self.setWindowTitle("Batch Find & Replace — Rule Sets (HTML)")
+        self.setWindowTitle("Batch Find & Replace — Rule sets")
         self.resize(DIALOG_MIN_WIDTH, DIALOG_MIN_HEIGHT)
 
         layout = QVBoxLayout(self)
