@@ -8,7 +8,7 @@ from datetime import datetime
 import time
 from typing import Optional, Iterable, List, Dict, Any, Tuple
 from collections import defaultdict
-from ...log_cleanup import delete_old_anki_log_files
+
 from .FR_global_utils import now_stamp, md_inline, md_table_cell
 
 
@@ -726,16 +726,6 @@ def write_batch_fr_debug(
         out_text = "\n".join(lines) + "\n"
         out_path.write_text(out_text, encoding="utf-8")
 
-        # * Clean up old log files after writing a new debug log
-        try:
-            # ! New signature: cleanup is count-based; we just pass the base_dir and disable dry_run
-            delete_old_anki_log_files(
-                base_dir=out_dir,
-                dry_run=False,
-            )
-        except Exception as e:
-            print(f"[batch_FR] Log cleanup failed: {e}", file=sys.stderr)
-
         return out_path
 
     except Exception as e:  # pragma: no cover
@@ -976,16 +966,6 @@ def write_regex_debug(
 
         out_text = "\n".join(lines) + "\n"
         out_path.write_text(out_text, encoding="utf-8")
-
-        # Clean up old log files after writing a new regex debug log
-        try:
-            # ! New signature: cleanup is count-based; we just pass the base_dir and disable dry_run
-            delete_old_anki_log_files(
-                base_dir=out_dir,
-                dry_run=False,
-            )
-        except Exception as e:
-            print(f"[batch_FR] Regex log cleanup failed: {e}", file=sys.stderr)
 
         return out_path
 

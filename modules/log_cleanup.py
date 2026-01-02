@@ -1,32 +1,16 @@
-"""
-anki_log_cleanup.py
-
-Smarter cleanup for Anki log files.
-
-Instead of time-based deletion only, this script:
-- Groups log files by a "base name" (stem before the first "__").
-- Keeps only the newest MAX_FILES_PER_BASE files per base.
-- Deletes only the older files in each group.
-
-Safety features:
-- Only touches files with ALLOWED_SUFFIXES.
-- Refuses to run on unsafe roots (/, home, Desktop, etc.).
-- Requires SAFE_ROOT_MARKER to appear in the root path.
-- DRY RUN by default when executed directly.
-"""
-
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 # ==========================
 # Config / defaults
 # ==========================
 
 # * This should ALWAYS point to a dedicated logs folder, NEVER Desktop directly.
-LOGS_ROOT = Path("/Users/claytongoddard/Desktop/anki_logs")
+LOGS_ROOT = Path("/Users/claytongoddard/Desktop/anki_logs/Main_toolbar")
 
 # * Only delete files with these suffixes (lowercased).
 ALLOWED_SUFFIXES = {".log", ".txt", ".md"}
@@ -34,8 +18,12 @@ ALLOWED_SUFFIXES = {".log", ".txt", ".md"}
 # * Require this marker to appear somewhere in the root path as an extra safety net.
 SAFE_ROOT_MARKER = "anki_logs"
 
-# * Maximum number of log files to keep per "base name".
-MAX_FILES_PER_BASE = 10
+# * Keep logs from the most recent N unique "runs".
+#   A run is identified by the trailing stamp in the filename: __HH-MM_MM-DD
+KEEP_RUNS = 2
+
+# * Regex to extract run stamp from filenames ending with '__HH-MM_MM-DD.ext'
+RUN_STAMP_RE = re.compile(r"__(\d{2}-\d{2}_\d{2}-\d{2})\.[A-Za-z0-9]+$", re.IGNORECASE)
 
 # * Timestamp format for console messages.
 TIMESTAMP_FMT = "%H-%M_%m-%d"
@@ -112,66 +100,82 @@ def _is_allowed_log_file(path: Path) -> bool:
     return True
 
 
-def _get_mtime(path: Path) -> Optional[datetime]:
-    """Return file modification time, or None on error."""
+
+
+def _extract_run_stamp(filename: str) -> Optional[str]:
+    """Extract trailing run stamp '__HH-MM_MM-DD' from a filename."""
+    m = RUN_STAMP_RE.search(filename)
+    return m.group(1) if m else None
+
+
+def _run_stamp_to_dt(stamp: str) -> Optional[datetime]:
+    """
+    Convert a run stamp 'HH-MM_MM-DD' into a datetime for sorting.
+
+    Notes
+    -----
+    - The stamp has no year; we assume the current year.
+    - To avoid incorrect ordering across New Year (e.g., Dec 31 logs when running on Jan 1),
+      if the parsed datetime is > ~1 day in the future, we treat it as last year.
+    - If parsing fails, return None.
+    """
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime)
-    except OSError:
+        base = datetime.strptime(stamp, "%H-%M_%m-%d")
+        now = _now()
+        dt = base.replace(year=now.year)
+
+        # ! Year-boundary fix: Dec/Jan rollover
+        if dt > (now + timedelta(days=1)):
+            dt = dt.replace(year=now.year - 1)
+
+        return dt
+    except Exception:
         return None
 
 
-def _base_name_for_log(path: Path) -> str:
-    """
-    Derive a "base name" for grouping log files.
-
-    Example:
-    - 'Batch_FR_Debug__09-02_12-09.md' -> 'Batch_FR_Debug'
-    - 'Regex_Debug__09-02_12-09.md' -> 'Regex_Debug'
-    - If no '__' present, use the full stem.
-    """
-    stem = path.stem  # e.g. 'Batch_FR_Debug__09-02_12-09'
-    if "__" in stem:
-        return stem.split("__", 1)[0]
-    return stem
-
-
-def _group_logs_by_base(root: Path) -> Dict[str, List[Tuple[Path, datetime]]]:
-    """
-    Scan `root` and group allowed log files by base name.
-
-    Returns:
-        dict[base_name] -> list of (path, mtime)
-    """
-    groups: Dict[str, List[Tuple[Path, datetime]]] = {}
+def _collect_run_stamps(root: Path) -> List[Tuple[str, datetime]]:
+    """Return sorted unique run stamps found under root as (stamp, dt), oldest->newest."""
+    seen: Dict[str, datetime] = {}
 
     for file_path in _iter_files_recursive(root):
         if not _is_allowed_log_file(file_path):
             continue
 
-        mtime = _get_mtime(file_path)
-        if mtime is None:
+        stamp = _extract_run_stamp(file_path.name)
+        if not stamp:
             continue
 
-        base = _base_name_for_log(file_path)
-        groups.setdefault(base, []).append((file_path, mtime))
+        dt = _run_stamp_to_dt(stamp)
+        if dt is None:
+            continue
 
-    return groups
+        # Keep the max dt for a given stamp (should be identical, but be defensive)
+        prev = seen.get(stamp)
+        if prev is None or dt > prev:
+            seen[stamp] = dt
+
+    return sorted(seen.items(), key=lambda t: t[1])
+
+
 
 
 def delete_old_anki_log_files(
-    base_dir: Optional[Path | str] = None,
-    max_files_per_base: Optional[int] = None,
+    base_dir: Optional[Union[Path, str]] = None,
+    max_files_per_base: Optional[int] = None,  # deprecated (kept for backward compatibility)
     dry_run: bool = True,
+    keep_runs: Optional[int] = None,
 ) -> List[Path]:
     """
-    Delete older log files based on count per base name, not just time.
+    Delete older log files based on *runs*, not per-base counts.
+
+    A "run" is identified by the trailing stamp in the filename:
+        __HH-MM_MM-DD
 
     Logic:
-    - Group log files by base name (stem before the first "__").
-    - For each base:
-        - Sort files by modification time (newest first).
-        - Keep the newest `max_files_per_base` files.
-        - Mark any remaining older files in that group for deletion.
+    - Find all unique run stamps under the root.
+    - Keep files whose stamp is in the newest `keep_runs` run stamps.
+    - Delete all other allowed log files that have a stamp.
+    - Files without a run stamp are NOT deleted (safety default).
 
     Safety:
     - Only deletes files with ALLOWED_SUFFIXES.
@@ -183,10 +187,12 @@ def delete_old_anki_log_files(
     base_dir:
         Root directory to clean. If None, uses LOGS_ROOT.
     max_files_per_base:
-        Maximum number of files to keep per base. If None, uses MAX_FILES_PER_BASE.
+        Deprecated; ignored. (Kept so existing callers don't break.)
     dry_run:
         If True, does not delete anything; just returns list of files that
         *would* be deleted.
+    keep_runs:
+        Number of most recent runs to keep. If None, uses KEEP_RUNS.
 
     Returns
     -------
@@ -195,7 +201,13 @@ def delete_old_anki_log_files(
     """
     root = Path(base_dir) if base_dir is not None else LOGS_ROOT
     root = root.expanduser().resolve()
-    limit = max_files_per_base if max_files_per_base is not None else MAX_FILES_PER_BASE
+
+    # * Backward compatibility: ignore max_files_per_base
+    _ = max_files_per_base
+
+    keep_n = KEEP_RUNS if keep_runs is None else int(keep_runs)
+    if keep_n < 0:
+        keep_n = 0
 
     deleted: List[Path] = []
 
@@ -210,30 +222,37 @@ def delete_old_anki_log_files(
             f"Expected a dedicated logs directory containing marker '{SAFE_ROOT_MARKER}'."
         )
 
-    groups = _group_logs_by_base(root)
+    # 1) Determine the newest N run stamps
+    stamps = _collect_run_stamps(root)  # oldest->newest
+    if not stamps or keep_n == 0:
+        # If no stamps found (or keeping none), we do nothing by default.
+        # Rationale: don't delete unknown-format files.
+        return deleted
 
-    for base, items in groups.items():
-        # items: list[(path, mtime)]
-        # * Sort newest-first by mtime
-        items.sort(key=lambda t: t[1], reverse=True)
+    keep_set = {s for s, _dt in stamps[-keep_n:]}
 
-        # * Files to keep: first `limit` entries
-        keep = items[:limit]
-        to_delete = items[limit:]
-
-        if not to_delete:
+    # 2) Delete stamped files not in keep_set
+    for file_path in _iter_files_recursive(root):
+        if not _is_allowed_log_file(file_path):
             continue
 
-        for file_path, _mtime in to_delete:
-            if dry_run:
+        stamp = _extract_run_stamp(file_path.name)
+        if not stamp:
+            # ? No run stamp: keep (safety default)
+            continue
+
+        if stamp in keep_set:
+            continue
+
+        if dry_run:
+            deleted.append(file_path)
+        else:
+            try:
+                file_path.unlink()
                 deleted.append(file_path)
-            else:
-                try:
-                    file_path.unlink()
-                    deleted.append(file_path)
-                except OSError:
-                    # If deletion fails, skip but do not remove from list; it's useful to know it was attempted.
-                    continue
+            except OSError:
+                # If deletion fails, skip but do not remove from list; it's useful to know it was attempted.
+                continue
 
     return deleted
 
@@ -250,12 +269,12 @@ if __name__ == "__main__":
     - It will print which files *would* be deleted.
     """
     timestamp = _now().strftime(TIMESTAMP_FMT)
-    print(f"[{timestamp}] DRY RUN – inspecting Anki logs in: {LOGS_ROOT}")
+    print(f"[{timestamp}] DRY RUN – inspecting Anki logs in: {LOGS_ROOT} (keeping last {KEEP_RUNS} runs)")
 
     deleted_files = delete_old_anki_log_files(dry_run=True)
 
     if not deleted_files:
-        print("No files would be deleted (either under limit per base, or no logs found).")
+        print("No files would be deleted (no stamped logs found, or already within last N runs).")
     else:
         print(f"{len(deleted_files)} file(s) would be deleted:")
         for p in deleted_files:
@@ -263,6 +282,7 @@ if __name__ == "__main__":
 
         print(
             "\nIf this list looks correct, call "
-            "`delete_old_anki_log_files(dry_run=False)` from Python, "
+            "`delete_old_anki_log_files(dry_run=False)` from Python "
+            "(optionally pass keep_runs=2), "
             "or temporarily change dry_run to False in the __main__ block."
         )

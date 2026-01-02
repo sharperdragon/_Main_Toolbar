@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple, Optional, Literal
 from time import strftime
 from typing import Dict, Iterable, List, Sequence, Tuple, Set
 
+
 from aqt import mw
 from aqt.qt import QMessageBox
 from aqt.operations import CollectionOp, QueryOp
@@ -19,11 +20,16 @@ from .tag_rename_utils import (
     _norm_tag, _normalize_pairs, _resolve_chains,
     _compute_prefixes, _first_segment, _looks_literal_segment, _sanitize_parent_only,
     _rename_tag_token,
-    # ? NEW: left-path helpers
     has_left_path_capture, inject_left_path_capture,
     build_substring_pairs_from_prefixes, compress_parent_ops,
 )
 
+
+_BACKREF_RE = re.compile(r"\\([1-9])")
+
+# Display-only: placeholder shown when a backreference (e.g. "\\1") exists but the capture group
+# is not safely previewable (e.g. the group is something like ".*" or contains regex operators).
+UNKNOWN_GROUP_PLACEHOLDER: str = "…"
 
 DRY_RUN: bool = True
 
@@ -114,6 +120,95 @@ except Exception:
 
 
 
+def _preview_expand_backrefs_for_label(old_pat: str, new_rep: str) -> str:
+    """
+    Display-only: try to expand \\1..\\9 in the replacement using literal-ish capture groups
+    that appear in the *pattern text itself*.
+
+    If we can't confidently infer the group text, return new_rep unchanged.
+    """
+    if "\\" not in new_rep:
+        return new_rep
+    if not _BACKREF_RE.search(new_rep):
+        return new_rep
+
+    # Extract simple capturing groups from the pattern text.
+    # Keep placeholders so capture group numbering stays correct even when some groups are not previewable.
+    groups: List[Optional[str]] = []
+
+    i = 0
+    while i < len(old_pat):
+        ch = old_pat[i]
+
+        # skip escaped parens
+        if ch == "\\" and i + 1 < len(old_pat):
+            i += 2
+            continue
+
+        if ch == "(":
+            # Ignore non-capturing / special groups like (?:  (?=  (?P<  etc.
+            nxt = old_pat[i + 1 : i + 3] if i + 2 < len(old_pat) else ""
+            if i + 1 < len(old_pat) and old_pat[i + 1] == "?":
+                # not a simple capturing group
+                i += 1
+                i += 1
+                continue
+
+            # Find the matching ')', but only if there is no nesting (simple case)
+            j = i + 1
+            buf = []
+            nested = 0
+            ok = True
+            while j < len(old_pat):
+                cj = old_pat[j]
+                if cj == "\\" and j + 1 < len(old_pat):
+                    # keep escaped chars in buffer as literal
+                    buf.append(old_pat[j + 1])
+                    j += 2
+                    continue
+                if cj == "(":
+                    nested += 1
+                if cj == ")":
+                    if nested == 0:
+                        break
+                    nested -= 1
+                buf.append(cj)
+                j += 1
+
+            if j >= len(old_pat) or old_pat[j] != ")":
+                ok = False
+
+            content = "".join(buf).strip()
+
+            # Always reserve a slot for this capturing group so numbering stays stable.
+            groups.append(None)
+
+            # Fill the slot only if the group looks literal-ish (no regex operators).
+            if ok and content and not re.search(r"[.\[\]\*\+\?\|\{\}\^$]", content):
+                groups[-1] = content
+
+            i = j + 1
+            continue
+
+        i += 1
+
+    if not groups:
+        return new_rep
+
+    def _sub(m: re.Match) -> str:
+        n = int(m.group(1))
+        if 1 <= n <= len(groups):
+            val = groups[n - 1]
+            # If the group is previewable, show its literal content.
+            if val is not None:
+                return val  # type: ignore[return-value]
+            # If the group exists but isn't safely previewable, show a placeholder instead of "\\1".
+            return UNKNOWN_GROUP_PLACEHOLDER
+        # If the backref index is out of range, leave it untouched.
+        return m.group(0)
+
+    return _BACKREF_RE.sub(_sub, new_rep)
+
 
 def load_all_pairs_for_ui() -> Tuple[List[Pair], List[str], List[Path], List[Path]]:
     """
@@ -138,7 +233,8 @@ def load_all_pairs_for_ui() -> Tuple[List[Pair], List[str], List[Path], List[Pat
     labels: List[str] = []
     for p in raw_pairs:
         try:
-            label = f"{p.old} → {p.new}"
+            preview_new = _preview_expand_backrefs_for_label(p.old, p.new)
+            label = f"{p.old} → {preview_new}"
         except Exception:
             # Fallback if attributes are missing for some reason
             label = repr(p)
@@ -146,6 +242,73 @@ def load_all_pairs_for_ui() -> Tuple[List[Pair], List[str], List[Path], List[Pat
 
     return raw_pairs, labels, csv_files, json_files
 
+
+def load_all_pairs_for_ui_with_sources() -> Tuple[List[Pair], List[str], List[Path], List[Path], List[Path]]:
+    """ 
+    Load all CSV/JSON rename pairs + build labels, but ALSO return the source file path
+    for each returned pair (aligned to the normalized list).
+
+    Returns:
+        (pairs, labels, pair_sources, csv_files, json_files)
+
+    Notes:
+        - pair_sources[i] corresponds to pairs[i]
+        - Normalization may drop/merge pairs, so we re-align sources after _normalize_pairs().
+    """
+    csv_files, json_files = _discover_rule_files(RULES_DIR)
+
+    loaded_pairs: List[Pair] = []
+    loaded_sources: List[Path] = []
+
+    # 1) Load CSV pairs (CSV-first to match execution order)
+    for f in csv_files:
+        these = _load_pairs_from_csv(f)
+        for p in these:
+            loaded_pairs.append(p)
+            loaded_sources.append(f)
+
+    # 2) Load JSON pairs
+    for f in json_files:
+        these = _load_pairs_from_json(f)
+        for p in these:
+            loaded_pairs.append(p)
+            loaded_sources.append(f)
+
+    # Normalize the combined list (may drop/merge pairs)
+    raw_pairs = _normalize_pairs(loaded_pairs)
+
+    # 3) Re-align sources after normalization using a stable key
+    def _pair_key(p: Pair) -> Tuple[str, str, str, str]:
+        return (
+            getattr(p, "old", ""),
+            getattr(p, "new", ""),
+            str(getattr(p, "src", "")),
+            str(getattr(p, "kind", "")),
+        )
+
+    # First-seen source for each key
+    src_by_key: Dict[Tuple[str, str, str, str], Path] = {}
+    for p, src_path in zip(loaded_pairs, loaded_sources):
+        k = _pair_key(p)
+        if k not in src_by_key:
+            src_by_key[k] = src_path
+
+    labels: List[str] = []
+    pair_sources: List[Path] = []
+
+    for p in raw_pairs:
+        # Human label (same style as load_all_pairs_for_ui)
+        try:
+            preview_new = _preview_expand_backrefs_for_label(p.old, p.new)
+            label = f"{p.old} → {preview_new}"
+        except Exception:
+            label = repr(p)
+        labels.append(label)
+
+        # Source alignment (best-effort)
+        pair_sources.append(src_by_key.get(_pair_key(p), Path("<unknown>")))
+
+    return raw_pairs, labels, pair_sources, csv_files, json_files
 
 def _prompt_and_run(parent):
     """

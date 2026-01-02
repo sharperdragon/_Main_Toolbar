@@ -40,12 +40,21 @@
 },
 {
     "query": "re:.::include\\sROA\\}\\}",
-    "pattern":"include\\sROA\\}\\}",
-    "replacement": "+ ROA}}",
+    "pattern":"include(\\sROA\\}\\})",
+    "replacement": "+\\1",
     "regex": true,
     "fields": [
     "Text"
     ],
-  "delete_chars": {"max_chars": 8, "count_spaces": true }
+  "delete_chars": {"max_chars": 7, "count_spaces": true }
+},
+{
+    "pattern":"(\\{\\{c\\d::[^:\\}]+?::↑ / ↓ /) Normal(\\}\\})",
+    "replacement": "\\1 ⟷",
+    "regex": true,
+    "fields": [
+    "Text"
+    ],
+  "delete_chars": {"max_chars": 7, "count_spaces": true }
 }
 ]
