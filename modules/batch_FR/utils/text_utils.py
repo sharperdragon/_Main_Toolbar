@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Iterable, Iterator, List, Optional
 import html
+from .data_defs import RunConfig  
 import re
 
 # * Precompiled regexes (faster at runtime)

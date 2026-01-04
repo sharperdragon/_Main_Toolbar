@@ -1,25 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union, Set
+import re
+
+from .text_utils import visible_len
+
+
 # =========================
 # Regex helpers (compile, flags, validation, guards)
 # =========================
 # ! All pattern/flags/replacement logic lives here (no I/O, no Anki).
 
-from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
-import re
-
-from .text_utils import visible_len  # * single source of truth for visibility
-
 __all__ = [
     "apply_rule_defaults",
     "validate_regex_replacement",
-    "validate_anki_search_string",
     "flags_from_str",
     "compile_pattern",
-    "subn_until_stable",
-    "subn_literal_until_stable",
     "apply_substitution",
+    "apply_rule_to_text",
     "deletion_exceeds_limit",
     "basic_html_cloze_balance_ok",
     "ensure_dir",
@@ -29,14 +28,101 @@ __all__ = [
 # =========================
 # Anki Browser regex helpers (lightweight, best-effort)
 # =========================
-
 # ! Anki's Browser search supports only a small set of escaped characters.
 # ! Anything else (like \w, \s, \d, \{, \}) tends to raise
 # ! "the escape sequence `\x` is not defined" at search time.
+
+
 ANKI_ALLOWED_ESCAPES = set(r'\\":*_()')
 
 
-def _find_anki_unsupported_escapes(pattern: str) -> List[str]:
+def compiled_can_match_empty(patt: str, flags: Union[str, int, None]) -> bool:
+    """Return True if the regex pattern can match the empty string."""
+    try:
+        rx = re.compile(patt, flags_from_str(flags))
+        return rx.search("") is not None
+    except Exception:
+        return False
+
+
+def _apply_patterns_loop_safe(
+    *,
+    patterns: List[str],
+    repl: str,
+    text: str,
+    is_regex: bool,
+    flags: Union[str, int, None],
+    loops_cap: int,
+) -> Tuple[str, int, int, str, bool]:
+    """Apply the rule's pattern list with deterministic looping.
+
+    A "loop" here means: apply ALL patterns once (in order) = 1 pass.
+
+    Break conditions:
+    - 0 substitutions in a pass OR no net change -> stable
+    - output repeats a prior state -> cycle
+    - pass cap reached -> cap
+
+    Returns:
+      (final_text, total_subs, passes_used, break_reason, empty_match_forced_single)
+    where break_reason in {'stable','cycle','cap'}.
+    """
+    if loops_cap < 1:
+        loops_cap = 1
+
+    empty_match_forced_single = False
+
+    # If looping is enabled and ANY pattern can match empty, force single-pass.
+    # Empty-matchable regexes are a classic source of runaway looping.
+    if is_regex and loops_cap > 1:
+        try:
+            for p in patterns:
+                if compiled_can_match_empty(p, flags if flags is not None else "m"):
+                    empty_match_forced_single = True
+                    loops_cap = 1
+                    break
+        except Exception:
+            pass
+
+    working = text
+    total_subs = 0
+    passes_used = 0
+    seen: Set[str] = {working}
+
+    for _ in range(loops_cap):
+        before_pass = working
+        pass_subs = 0
+
+        # One pass: apply each pattern exactly once.
+        for p in patterns:
+            working, subs, _ignored = apply_substitution(
+                p,
+                repl,
+                working,
+                is_regex=is_regex,
+                flags=flags,
+                max_loops=1,
+            )
+            if subs:
+                pass_subs += subs
+
+        passes_used += 1
+        if pass_subs:
+            total_subs += pass_subs
+
+        # Stable: no subs or no net change.
+        if pass_subs == 0 or working == before_pass:
+            return working, total_subs, passes_used, "stable", empty_match_forced_single
+
+        # Cycle guard: output repeats prior state.
+        if working in seen:
+            return working, total_subs, passes_used, "cycle", empty_match_forced_single
+        seen.add(working)
+
+    return working, total_subs, passes_used, "cap", empty_match_forced_single
+
+
+def find_anki_unsupported_escapes(pattern: str) -> List[str]:
     """Return a list of escape sequences that are likely invalid in Anki Browser regex.
 
     Example: '\\w foo \\s' -> ['\\w', '\\s']
@@ -66,7 +152,7 @@ def validate_anki_search_string(search: str) -> Tuple[bool, str]:
     # Simple case: whole query is a regex search.
     if s.startswith("re:"):
         pattern = s[3:]
-        bad = _find_anki_unsupported_escapes(pattern)
+        bad = find_anki_unsupported_escapes(pattern)
         if bad:
             return False, f"Anki Browser regex likely invalid; unsupported escapes: {', '.join(bad)}"
         return True, "ok"
@@ -146,9 +232,9 @@ def _coerce_repl_for_python(raw: str, is_regex: bool) -> str:
     placeholder = "\uFFFF"
     s = s.replace("$$", placeholder)
 
-    # Convert $1, $2, ... into \\g<1>, \\g<2>, ... for Python's re.sub semantics.
+    # Convert $1, $2, ... into \g<1>, \g<2>, ... for Python's re.sub semantics.
     def _num_backref(m: re.Match) -> str:
-        return r"\\g<%s>" % m.group(1)
+        return r"\g<%s>" % m.group(1)
 
     s = re.sub(r"\$(\d+)", _num_backref, s)
 
@@ -251,6 +337,61 @@ def apply_substitution(
     if is_regex:
         return subn_until_stable(pattern_or_find, replacement, text, flags=flags, max_loops=max_loops)
     return subn_literal_until_stable(pattern_or_find, replacement, text, max_loops=max_loops)
+
+
+def apply_rule_to_text(
+    *,
+    patterns: Union[str, List[str]],
+    replacement: str,
+    text: str,
+    is_regex: bool,
+    flags: Union[str, int, None],
+    loop: bool,
+    loops_cap: int,
+) -> Tuple[str, Dict[str, Any]]:
+    """Single engine-facing API to apply one rule to one text string.
+
+    Returns:
+      (new_text, meta)
+
+    Meta fields are chosen to match engine.py accounting:
+      - subs_total: int
+      - passes_used: int
+      - break_reason: 'stable'|'cycle'|'cap'
+      - empty_match_forced_single: bool
+    """
+    pats = [patterns] if isinstance(patterns, str) else list(patterns or [])
+    pats = [p for p in pats if str(p).strip()]
+    if not pats:
+        return text, {
+            "subs_total": 0,
+            "passes_used": 0,
+            "break_reason": "stable",
+            "empty_match_forced_single": False,
+        }
+
+    repl_for_py = _coerce_repl_for_python(replacement, is_regex=is_regex)
+
+    cap = int(loops_cap or 1)
+    if not loop:
+        cap = 1
+
+    new_text, subs_total, passes_used, break_reason, forced_single = _apply_patterns_loop_safe(
+        patterns=pats,
+        repl=repl_for_py,
+        text=text,
+        is_regex=is_regex,
+        flags=flags,
+        loops_cap=cap,
+    )
+
+    meta = {
+        "subs_total": int(subs_total),
+        "passes_used": int(passes_used),
+        "break_reason": str(break_reason),
+        "empty_match_forced_single": bool(forced_single),
+    }
+    return new_text, meta
 
 
 # =========================

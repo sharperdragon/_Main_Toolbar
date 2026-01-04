@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, Pattern
 
@@ -8,9 +7,34 @@ from datetime import datetime
 from collections import defaultdict
 import re
 
-from .rules_io import load_remove_sets_from_config, load_remove_patterns, shape_remove_patterns_to_rules
+from .rules_io import (
+    load_remove_sets_from_config, load_remove_patterns, shape_remove_patterns_to_rules
+    )
+
 
 from .regex_utils import apply_substitution, flags_from_str
+
+# ! Debug log example capture limits (keep logs readable)
+MAX_EXAMPLES_PER_REMOVE_RULE = 2
+MAX_REMOVE_EXAMPLE_CHARS = 240
+
+def _preview_snip(s: Any, limit: int = MAX_REMOVE_EXAMPLE_CHARS) -> str:
+    """Return a short, log-friendly preview of text.
+
+    - Normalizes newlines to literal '\\n' so markdown tables stay intact.
+    - Truncates long content to avoid huge logs.
+    """
+    try:
+        t = "" if s is None else str(s)
+    except Exception:
+        t = ""
+
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    t = t.replace("\n", "\\n")
+
+    if len(t) > int(limit):
+        return t[: int(limit)] + "…"
+    return t
 
 
 # ---------------------------------------------------------------------
@@ -85,7 +109,13 @@ def _loop_substitution_with_cycle_guard(
 
     return working, total_subs, loops_used, "cap"
 
-from .FR_global_utils import RunConfig, load_field_remove_rules, md_inline, md_table_cell, anki_query_escape_controls
+from .FR_global_utils import  load_field_remove_rules, md_inline, md_table_cell, anki_query_escape_controls
+
+from .data_defs import (
+    RunConfig, Rule, 
+    RemoveRuleDef, RemoveFieldRuleKey, RemoveRuleStats, RemoveRunContext, RemoveContext
+    )
+
 
 # Optional: used only for query-audit logging (safe fallback if unavailable)
 
@@ -103,8 +133,8 @@ def is_remove_rule_filename(path_or_name: Any) -> bool:
     """Return True if the selected file is a TXT remove-rule file by name.
 
     We treat a file as a remove-rule TXT file if its *filename* ends with:
-      - `_remove_rule.txt`  OR
-      - `_remove_rules.txt`
+      - `remove_rule.txt`  OR
+      - `remove_rules.txt`
 
     This is used for deciding whether to write a dedicated `Remove_FR_Debug__*.md`
     for the run (written once at the end, not per note/field).
@@ -116,7 +146,8 @@ def is_remove_rule_filename(path_or_name: Any) -> bool:
     except Exception:
         name = str(path_or_name)
     name = name.strip().lower()
-    return name.endswith("_remove_rule.txt") or name.endswith("_remove_rules.txt")
+    # ! Match any filename that ends with remove_rule(s).txt (no underscore required)
+    return name.endswith("remove_rule.txt") or name.endswith("remove_rules.txt")
 
 
 
@@ -231,61 +262,7 @@ def _as_find_notes_query(q: Union[str, List[str], None]) -> Optional[str]:
 
 
 
-# ? Core data structures -----------------------------------------------------
-@dataclass
-class RemoveRuleDef:
-    idx: int
-    source_file: str
-    pattern: str
-    flags: str
-    is_regex: bool
-    max_loops: int
 
-
-@dataclass(frozen=True)
-class RemoveFieldRuleKey:
-    """Key for per-field stats: (rule index, source file, field name)."""
-    rule_idx: int
-    source_file: str
-    field_name: str
-
-@dataclass
-class RemoveRuleStats:
-    """Per-field stats for a virtual remove rule."""
-    rule: RemoveRuleDef
-    field_name: str
-    notes_seen: int = 0
-    notes_matched: int = 0
-    subs: int = 0
-    loops_used: int = 0
-    rm_field_subs: int = 0
-    examples: List[Dict[str, str]] = field(default_factory=list)
-
-
-@dataclass
-class RemoveRunContext:
-    """Run-wide context just for remove rules."""
-    cfg_snapshot: Dict[str, Any]
-    remove_cfg: Dict[str, Any]
-    remove_rules: List[RemoveRuleDef]
-    field_rules_stats: Dict[RemoveFieldRuleKey, RemoveRuleStats]
-    remove_max_loops: int
-    timestamp_str: str
-    field_source_file: str
-    field_target_fields: List[str]
-    # ? Guard: ensure we only write Remove_FR_Debug once per run (not per note/field)
-    debug_written: bool = False
-
-
-@dataclass
-class RemoveContext:
-    """Context used during a batch_FR run for all remove-related work."""
-    remove_cfg: Dict[str, Any]
-    remove_ruleset: List[Dict[str, Any]]
-    field_remove_patterns: List[Pattern[str]]
-    remove_max_loops: int
-    field_remove_fields: Optional[List[str]]
-    run_ctx: Optional[RemoveRunContext] = None
 
 
 # ? Helpers for resolving paths / fields ------------------------------------
@@ -449,7 +426,7 @@ def build_remove_context(
             except Exception:
                 return
             extra_rules.extend(
-                shape_remove_patterns_to_rules(pats, defaults, fields_all)
+                shape_remove_patterns_to_rules(pats, defaults, fields_all, source_path=p)
             )
 
         # Single path or list-like container
@@ -468,6 +445,56 @@ def build_remove_context(
 
         if extra_rules:
             remove_ruleset = list(remove_ruleset) + extra_rules
+
+        # * De-dupe generic remove rules (patterns can be loaded from config snapshot + explicit selection)
+        #   Prefer entries with a real source_path/source_file over unknown-source entries.
+        deduped: List[Dict[str, Any]] = []
+        seen: Dict[str, int] = {}
+
+        def _rr_key(rr: Dict[str, Any]) -> str:
+            patt = str(rr.get("pattern", "") or "")
+            repl = str(rr.get("replacement", "") or "")
+            flags = str(rr.get("flags", "") or "")
+            regex = "1" if bool(rr.get("regex", True)) else "0"
+            loop = "1" if bool(rr.get("loop", True)) else "0"
+            fields = rr.get("fields")
+            if isinstance(fields, (list, tuple)):
+                fields_s = ",".join(str(x).strip() for x in fields if str(x).strip())
+            else:
+                fields_s = str(fields or "")
+            return "|".join([patt, repl, flags, regex, loop, fields_s])
+
+        def _has_real_source(rr: Dict[str, Any]) -> bool:
+            sp = rr.get("source_path") or rr.get("_source_path")
+            sf = rr.get("source_file") or rr.get("_source_file")
+            try:
+                if sp and str(sp).strip():
+                    return True
+            except Exception:
+                pass
+            try:
+                if sf and str(sf).strip() and str(sf).strip().lower() != "unknown_source":
+                    return True
+            except Exception:
+                pass
+            return False
+
+        for rr in remove_ruleset:
+            if not isinstance(rr, dict):
+                continue
+            k = _rr_key(rr)
+            if k not in seen:
+                seen[k] = len(deduped)
+                deduped.append(rr)
+                continue
+
+            # Prefer real provenance over unknown provenance
+            prior_idx = seen[k]
+            prior = deduped[prior_idx]
+            if (not _has_real_source(prior)) and _has_real_source(rr):
+                deduped[prior_idx] = rr
+
+        remove_ruleset = deduped
 
     # Resolve and load field-remove rules (compiled regex patterns)
     field_remove_path = _resolve_field_remove_path(cfg_snapshot, field_remove_rules)
@@ -578,7 +605,7 @@ def maybe_write_remove_debug_for_selection(
 ) -> Optional[Path]:
     """Write Remove_FR_Debug once if a remove-rule TXT file was selected.
 
-    - Trigger: any selected filename ends with `_remove_rule.txt` or `_remove_rules.txt`.
+    - Trigger: any selected filename ends with `remove_rule.txt` or `remove_rules.txt`.
     - Writes at most once per run (uses ctx.run_ctx.debug_written guard).
     - This must be called from engine.py (end-of-run), not per note/field.
     """
@@ -598,11 +625,18 @@ def maybe_write_remove_debug_for_selection(
         return None
 
     try:
-        p = write_remove_debug_md(ctx, log_dir)
+        # ! Normalize/expand the directory so it matches the engine/logger outputs.
+        norm_dir = Path(str(log_dir)).expanduser()
+        p = write_remove_debug_md(ctx, norm_dir)
         if p is not None:
             ctx.run_ctx.debug_written = True
         return p
-    except Exception:
+    except Exception as e:
+        try:
+            # Best-effort: stash the last debug-write error so engine/report can surface it.
+            setattr(ctx.run_ctx, "debug_write_error", f"{type(e).__name__}: {e}")
+        except Exception:
+            pass
         return None
 
 
@@ -655,6 +689,12 @@ def apply_remove_pipeline_to_field(
     #    We keep generic behavior here but do not currently log these into the dedicated
     #    remove MD file (that can be added later if desired).
     for rr in ctx.remove_ruleset:
+        # * Per-rule execution counters for logging
+        #   (These live on the rr dict so write_remove_debug_md can render them)
+        rr.setdefault("_applied_subs", 0)
+        rr.setdefault("_loops_used_sum", 0)
+        rr.setdefault("_break_reasons", {})
+        rr.setdefault("_examples", [])
         patt_raw = rr.get("pattern", "")
         if not patt_raw:
             continue
@@ -677,6 +717,7 @@ def apply_remove_pipeline_to_field(
         # ! Loop-safe remove: repeat single-pass substitutions until stable/cycle/cap.
         #   This prevents long stalls when patterns keep "matching" without converging.
         final_text = working
+        before_working = working
         total_subs = 0
         loops_used = 0
         break_reason = "stable"
@@ -703,6 +744,27 @@ def apply_remove_pipeline_to_field(
         )
 
         working = final_text
+        # * Capture a small before/after example for logs (cap per TXT remove rule)
+        try:
+            if total_subs and isinstance(rr.get("_examples"), list) and len(rr["_examples"]) < MAX_EXAMPLES_PER_REMOVE_RULE:
+                rr["_examples"].append(
+                    {
+                        "field": "" if field_name is None else str(field_name),
+                        "before": _preview_snip(before_working),
+                        "after": _preview_snip(final_text),
+                    }
+                )
+        except Exception:
+            pass
+
+        # Record per-rule stats
+        try:
+            rr["_applied_subs"] = int(rr.get("_applied_subs", 0)) + int(total_subs or 0)
+            rr["_loops_used_sum"] = int(rr.get("_loops_used_sum", 0)) + int(loops_used or 0)
+            br = str(break_reason or "stable")
+            rr["_break_reasons"][br] = int(rr["_break_reasons"].get(br, 0)) + 1
+        except Exception:
+            pass
 
         if total_subs:
             per["remove_field_subs"] = per.get("remove_field_subs", 0) + total_subs
@@ -834,7 +896,8 @@ def write_remove_debug_md(
     if run_ctx is None:
         return None
 
-    log_dir_path = Path(log_dir)
+    # ! Important: expanduser so "~/Desktop/..." writes to the real Desktop, not a literal "~" folder.
+    log_dir_path = Path(str(log_dir)).expanduser()
     try:
         log_dir_path.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -899,6 +962,37 @@ def write_remove_debug_md(
             lines.append(f"### Rule #{i}")
             lines.append(f"- pattern (raw): `{md_inline(raw_pat)}`")
             lines.append(f"- pattern (exec): `{md_inline(pat)}`")
+            # Examples (from actual execution) — optional
+            try:
+                exs = rr.get("_examples")
+                if isinstance(exs, list) and exs:
+                    lines.append("")
+                    lines.append("| field | BEFORE | AFTER |")
+                    lines.append("|---|---|---|")
+                    for ex in exs[:MAX_EXAMPLES_PER_REMOVE_RULE]:
+                        fld = ex.get("field", "")
+                        b = ex.get("before", "")
+                        a = ex.get("after", "")
+                        lines.append(
+                            f"| `{md_table_cell(fld)}` | `{md_table_cell(b)}` | `{md_table_cell(a)}` |"
+                        )
+            except Exception:
+                pass
+            # Per-rule execution summary (if this run actually executed these rules)
+            try:
+                applied = int(rr.get("_applied_subs", 0))
+                loops_sum = int(rr.get("_loops_used_sum", 0))
+                br_map = rr.get("_break_reasons", {})
+                if isinstance(br_map, dict) and br_map:
+                    br_show = ", ".join(f"{k}:{v}" for k, v in sorted(br_map.items()))
+                else:
+                    br_show = ""
+                lines.append(f"- applied_subs: `{md_inline(applied)}`")
+                lines.append(f"- loops_used_sum: `{md_inline(loops_sum)}`")
+                if br_show:
+                    lines.append(f"- break_reasons: `{md_inline(br_show)}`")
+            except Exception:
+                pass
             q_any = rr.get("_browser_query") or rr.get("_effective_query") or q
             if isinstance(q_any, list):
                 q_show = "\n".join(str(x) for x in q_any)
@@ -1023,7 +1117,7 @@ def write_remove_debug_md(
 
     if not any_blocks:
         lines.append("")
-        lines.append("_No field remove rules were applied in this run._")
+        lines.append("_No field_remove_rules patterns were active in this run._")
 
     try:
         log_path.write_text("\n".join(lines), encoding="utf-8")

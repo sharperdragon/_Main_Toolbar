@@ -9,36 +9,100 @@ import time
 from typing import Optional, Iterable, List, Dict, Any, Tuple
 from collections import defaultdict
 
-from .FR_global_utils import now_stamp, md_inline, md_table_cell
+from .FR_global_utils import now_stamp, md_inline, md_table_cell, TS_FORMAT
 
+from .data_defs import RunConfig, Rule
+
+from .anki_query_utils import compose_search, effective_query
+from .rules_io import to_rule
 
 
 
 # --- Rule provenance helper (for logs/reports) -------------------------------
 
-def rule_prov(rule: dict) -> str:
+def rule_prov(rule: Any) -> str:
     """Small provenance string used in logs.
 
-    Prefers canonical keys added by rules_io (`source_file/source_path`) but falls
-    back to older keys to stay backward compatible.
-    """
-    src = ""
-    try:
-        src = str(
-            rule.get("source_file")
-            or rule.get("_source_file")
-            or (Path(str(rule.get("source_path") or "")).name if rule.get("source_path") else "")
-            or (Path(str(rule.get("_source_path") or "")).name if rule.get("_source_path") else "")
-            or (Path(str(rule.get("__source_file") or "")).name if rule.get("__source_file") else "")
-            or "?"
-        )
-    except Exception:
-        src = str(rule.get("source_file") or rule.get("_source_file") or rule.get("__source_file") or "?")
+    Supports both dict-based rules (legacy) and Rule dataclasses (preferred).
 
-    idx = rule.get("__rule_index")
-    nm = (rule.get("name") or "").strip()
-    base = f"[{src}#{idx}]" if idx is not None else (f"[{src}]" if src else "[?]")
+    Canonical provenance:
+    - source_file (filename)
+    - source_index (int)
+
+    Back-compat fallbacks:
+    - _source_file/_source_index
+    - source_path/_source_path/__source_file (may be a full path)
+    """
+
+    def _name_from_pathlike(x: Any) -> str:
+        if not x:
+            return ""
+        try:
+            return Path(str(x)).name
+        except Exception:
+            return str(x)
+
+    src = "?"
+    idx: Optional[Any] = None
+    nm = ""
+
+    # Dataclass Rule
+    if isinstance(rule, Rule):
+        src = (str(rule.source_file).strip() if rule.source_file else "?")
+        idx = rule.source_index
+        # Rule currently doesn't have a `name` field
+        nm = ""
+    # Dict rule
+    elif isinstance(rule, dict):
+        try:
+            src = str(
+                rule.get("source_file")
+                or rule.get("_source_file")
+                or _name_from_pathlike(rule.get("source_path"))
+                or _name_from_pathlike(rule.get("_source_path"))
+                or _name_from_pathlike(rule.get("__source_file"))
+                or "?"
+            )
+        except Exception:
+            src = str(rule.get("source_file") or rule.get("_source_file") or rule.get("__source_file") or "?")
+
+        idx = rule.get("source_index")
+        if idx is None:
+            idx = rule.get("_source_index")
+        if idx is None:
+            idx = rule.get("__source_index")
+        # Legacy logger used __rule_index sometimes
+        if idx is None:
+            idx = rule.get("__rule_index")
+
+        nm = (rule.get("name") or "").strip()
+    else:
+        # Fallback: treat as path-like
+        src = _name_from_pathlike(rule) or "?"
+
+    try:
+        idx_i = int(idx) if idx is not None else None
+    except Exception:
+        idx_i = None
+
+    base = f"[{src}#{idx_i}]" if idx_i is not None else f"[{src}]"
     return f"{base} {nm}" if nm else base
+
+
+# --- Helper: coerce dict/Rule into a Rule dataclass --------------------------
+
+def _as_rule(rule_like: Any) -> Rule:
+    """Return a Rule dataclass for downstream helpers.
+
+    - If already a Rule, return it.
+    - If a dict, convert via rules_io.to_rule() (expects normalized-ish input).
+    - Otherwise, raise TypeError.
+    """
+    if isinstance(rule_like, Rule):
+        return rule_like
+    if isinstance(rule_like, dict):
+        return to_rule(rule_like)
+    raise TypeError(f"Unsupported rule type: {type(rule_like)!r}")
 
 
 # --- Helper: resolve rule source info (path + label) ---
@@ -47,6 +111,7 @@ def _resolve_source_info(raw: Any) -> Tuple[str, str]:
 
     Accepts:
     - a per-rule dict (or rule dict)
+    - a Rule dataclass
     - a Path/string
 
     Prefers `source_path` (full path) when present, but always returns a usable
@@ -79,6 +144,21 @@ def _resolve_source_info(raw: Any) -> Tuple[str, str]:
                 return "", str(sf)
 
             return "", ""
+
+        # If a Rule dataclass was passed, use its provenance.
+        if isinstance(raw, Rule):
+            sf = str(raw.source_file).strip() if getattr(raw, "source_file", None) else ""
+            sp = getattr(raw, "source_path", None)
+
+            if sp:
+                try:
+                    p = Path(str(sp)).expanduser().resolve()
+                    return str(p), (sf or p.name or "?")
+                except Exception:
+                    sps = str(sp)
+                    return sps, (sf or (Path(sps).name if sps else "?"))
+
+            return "", sf
 
         # Not a dict: treat as path-like / label
         if raw is None:
@@ -472,7 +552,36 @@ def write_batch_fr_debug(
         except Exception:
             rules_root = None
 
-        rules_files_used = report.get("rules_files_used")
+        # Prefer the canonical key, but fall back to older report schemas
+        rules_files_used = (
+            report.get("rules_files_used")
+            or report.get("rules_files_expanded")
+            or report.get("rules_files_in")
+            or []
+        )
+
+        # Raw UI selection inputs (if present)
+        rules_files_selected = (
+            report.get("rules_files_selected")
+            or report.get("rules_files_in")
+            or []
+        )
+
+        # Show the raw selection first (helps diagnose UI vs expansion issues)
+        if isinstance(rules_files_selected, (list, tuple)) and rules_files_selected:
+            lines.append(f"- rule_files_selected ({len(rules_files_selected)}):")
+
+            def _rule_file_sort_key_sel(p: Any) -> str:
+                try:
+                    return Path(str(p)).name.lower()
+                except Exception:
+                    return str(p).lower()
+
+            for rf in sorted(rules_files_selected, key=_rule_file_sort_key_sel):
+                _, _, label = _log_rule_group_and_name(rf, rules_root)
+                lines.append(f"  - `{label}`")
+
+        # Then show the expanded/effective set used for the run
         if isinstance(rules_files_used, (list, tuple)) and rules_files_used:
             lines.append(f"- rule_files_used ({len(rules_files_used)}):")
 
@@ -541,7 +650,7 @@ def write_batch_fr_debug(
                 pat = str(rule.get("pattern", ""))
                 rep = str(rule.get("replacement", ""))
 
-                raw_src = rule.get("__source_file") or ""
+                raw_src = rule.get("source_path") or rule.get("_source_path") or rule.get("__source_file") or rule.get("source_file") or rule.get("_source_file") or ""
                 _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
                 if not label:
                     label = "<?>"
@@ -675,7 +784,11 @@ def write_batch_fr_debug(
                 lines.append(f"### Rule {idx}")
                 lines.append("")
                 lines.append(f"- query: `{md_inline(per.get('query', ''))}`")
+                if per.get("query_input") is not None:
+                    lines.append(f"- query_input: `{md_inline(per.get('query_input', ''))}`")
                 lines.append(f"- exclude: `{md_inline(per.get('exclude', ''))}`")
+                if per.get("exclude_input") is not None:
+                    lines.append(f"- exclude_input: `{md_inline(per.get('exclude_input', ''))}`")
                 if has_search:
                     lines.append(f"- search (Browser): `{md_inline(per.get('search', ''))}`")
                 if has_error:
@@ -808,8 +921,29 @@ def write_regex_debug(
 
         # Sources / settings
         lines.append("## Sources")
-        rule_files_used = report.get("rules_files_used") or []
-        lines.append(f"- Rule files: {len(rule_files_used)}")
+        # Prefer the canonical key, but fall back to older report schemas
+        rule_files_used = (
+            report.get("rules_files_used")
+            or report.get("rules_files_expanded")
+            or report.get("rules_files_in")
+            or []
+        )
+
+        rule_files_selected = (
+            report.get("rules_files_selected")
+            or report.get("rules_files_in")
+            or []
+        )
+        if rule_files_selected:
+            lines.append(f"- Rule files selected: {len(rule_files_selected)}")
+            lines.append("")
+            lines.append("  - Selected:")
+            for rf in rule_files_selected:
+                _, _, label = _log_rule_group_and_name(rf, rules_root)
+                lines.append(f"    - `{label}`")
+            lines.append("")
+
+        lines.append(f"- Rule files used: {len(rule_files_used)}")
         if rule_files_used:
             def _rule_file_sort_key(p: Any) -> str:
                 try:
@@ -887,7 +1021,7 @@ def write_regex_debug(
         for item in regex_invalids:
             rule = item.get("rule") or {}
             idx = rule.get("__rule_index", "?")
-            raw_src = rule.get("__source_file") or ""
+            raw_src = rule.get("source_path") or rule.get("_source_path") or rule.get("__source_file") or rule.get("source_file") or rule.get("_source_file") or ""
             src = _rule_source_name(raw_src)
             err = str(item.get("error") or "").strip()
             pat = str(rule.get("pattern") or "")
@@ -936,7 +1070,11 @@ def write_regex_debug(
                 lines.append(f"### Rule {idx}")
                 lines.append("")
                 lines.append(f"- query: `{md_inline(per.get('query', ''))}`")
+                if per.get("query_input") is not None:
+                    lines.append(f"- query_input: `{md_inline(per.get('query_input', ''))}`")
                 lines.append(f"- exclude: `{md_inline(per.get('exclude', ''))}`")
+                if per.get("exclude_input") is not None:
+                    lines.append(f"- exclude_input: `{md_inline(per.get('exclude_input', ''))}`")
                 if has_search:
                     lines.append(f"- search (Browser): `{md_inline(per.get('search', ''))}`")
                 if has_error:
@@ -973,3 +1111,285 @@ def write_regex_debug(
         print(f"[batch_FR] Failed to write regex debug markdown: {e}", file=sys.stderr)
         return None
 
+
+def _init_report(cfg: RunConfig) -> Dict[str, Any]:
+    return {
+        "ts_format": cfg.ts_format,
+        # * Store log_dir as a string in the report for stable markdown rendering
+        "log_dir": str(cfg.log_dir),
+        # * Extensive-debug settings (may be overridden later from config_snapshot)
+        "extensive_debug": getattr(cfg, "extensive_debug", False),
+        "extensive_debug_max_examples": getattr(cfg, "extensive_debug_max_examples", 60),
+        "rules": 0,
+        "notes_touched": 0,        # notes matched by rules
+        "notes_changed": 0,        # actual commits
+        "notes_would_change": 0,   # simulated changes (esp. DRY_RUN)
+        "guard_skips": 0,
+        "per_rule": [],
+        "report_paths": {},
+    }
+
+def _init_per_rule(rule: Any, idx: int) -> Dict[str, Any]:
+    # Normalize to a Rule dataclass for consistent access
+    try:
+        r = _as_rule(rule)
+    except Exception:
+        # Fail-safe: build a minimal per-rule record
+        return {
+            "index": idx,
+            "file": "",
+            "source_file": "",
+            "source_path": "",
+            "source_index": None,
+            "query": [],
+            "query_input": [],
+            "exclude": [],
+            "exclude_input": [],
+            "pattern": "",
+            "flags": "",
+            "fields": [],
+            "loop": False,
+            # remove-loop logging additions:
+            "remove_loop": False,
+            "remove_max_loops": 0,
+            "remove_loops_used": 0,
+            "remove_loops_used_sum": 0,
+            "remove_loops_used_max": 0,
+            "remove_fields_looped": 0,
+            "remove_cap_hits": 0,
+            "remove_cycle_hits": 0,
+            "remove_empty_match_forced_single": 0,
+            # main-rule loop logging additions:
+            "fr_loop": False,
+            "fr_loops_used": 0,
+            "replacement": "",
+            "notes_matched": 0,
+            "notes_changed": 0,
+            "notes_would_change": 0,
+            "total_subs": 0,
+            "guard_skips": 0,
+            "remove_field_subs": 0,
+            "examples": [],
+            "search": "",
+            "search_repr": "",
+            "error": "",
+        }
+
+    # Source info (dict rules may carry full path; Rule currently carries filename only)
+    raw_src = ""
+    if isinstance(rule, dict):
+        raw_src = (
+            rule.get("source_path")
+            or rule.get("_source_path")
+            or rule.get("__source_file")
+            or rule.get("source_file")
+            or rule.get("_source_file")
+            or ""
+        )
+    else:
+        raw_src = getattr(r, "source_file", None) or ""
+
+    # `file` is a short label (filename-only)
+    file_name = ""
+    try:
+        file_name = Path(str(raw_src)).name if raw_src else (str(getattr(r, "source_file", "")) or "")
+    except Exception:
+        file_name = str(getattr(r, "source_file", "")) or ""
+
+    # Preserve full path when available (dict rules or Rule dataclass)
+    source_path = ""
+    if isinstance(rule, dict):
+        source_path = str(rule.get("source_path") or rule.get("_source_path") or "")
+    else:
+        try:
+            source_path = str(getattr(r, "source_path", "") or "")
+        except Exception:
+            source_path = ""
+
+    # Pattern display
+    patt_disp = r.pattern if isinstance(r.pattern, str) else (r.pattern[:1] if r.pattern else "")
+
+    # Query/exclude display
+    # - rules_io normalizes missing query to []
+    # - effective_query() derives include clauses from pattern/fields when input is empty
+    include_input: List[str] = []
+    if isinstance(r.query, list):
+        include_input = [str(x) for x in r.query]
+    elif isinstance(r.query, str) and r.query.strip():
+        include_input = [r.query.strip()]
+
+    try:
+        include_effective = [str(x) for x in (effective_query(r) or [])]
+    except Exception:
+        include_effective = list(include_input)
+
+    exclude_clauses: List[str] = []
+    if isinstance(r.exclude_query, list):
+        exclude_clauses = [str(x) for x in r.exclude_query]
+    elif isinstance(r.exclude_query, str) and r.exclude_query.strip():
+        exclude_clauses = [r.exclude_query.strip()]
+
+    # Compose the actual Browser search string (engine-compatible)
+    search = ""
+    try:
+        search = compose_search(r)
+    except Exception:
+        search = ""
+
+    return {
+        "index": idx,
+        # * Short name for backward-compatible displays
+        "file": file_name,
+        # * Full source path preserved for group-aware logging
+        "source_file": file_name,
+        "source_path": source_path,
+        "source_index": getattr(r, "source_index", None),
+        # `query` is the effective include clauses actually used by compose_search()
+        "query": include_effective,
+        # `query_input` is the raw rule-provided query (often empty)
+        "query_input": include_input,
+        "exclude": exclude_clauses,
+        "exclude_input": exclude_clauses,
+        "pattern": patt_disp,
+        "flags": r.flags,
+        "fields": r.fields,
+        "loop": r.loop,
+        # --- remove-loop logging additions:
+        "remove_loop": False,
+        "remove_max_loops": 0,
+        "remove_loops_used": 0,
+        "remove_loops_used_sum": 0,
+        "remove_loops_used_max": 0,
+        "remove_fields_looped": 0,
+        "remove_cap_hits": 0,
+        "remove_cycle_hits": 0,
+        "remove_empty_match_forced_single": 0,
+        # --- main-rule (JSON) loop logging additions:
+        "fr_loop": False,
+        "fr_loops_used": 0,
+        "replacement": r.replacement,
+        "notes_matched": 0,
+        "notes_changed": 0,
+        "notes_would_change": 0,
+        "total_subs": 0,
+        "guard_skips": 0,
+        "remove_field_subs": 0,
+        "examples": [],
+        # ! actual Browser search string (precomputed for logging)
+        "search": search,
+        "search_repr": repr(search),
+        "error": "",
+    }
+
+
+def _append_rule_summary(report: Dict[str, Any], per: Dict[str, Any]) -> None:
+    report["per_rule"].append(per)
+    report["rules"] = len(report["per_rule"])
+    report["notes_touched"] += per.get("notes_matched", 0)
+    report["notes_changed"] += per.get("notes_changed", 0)
+    report["notes_would_change"] += per.get("notes_would_change", 0)
+    report["guard_skips"] += per.get("guard_skips", 0)
+
+
+def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
+    # Prefer the config-provided ts_format, fall back to module default if missing
+    ts_fmt = cfg.ts_format or TS_FORMAT
+    ts = datetime.now().strftime(ts_fmt)
+    dry = bool(report.get("dry_run", False))
+
+    # Human-readable summary (kept in-memory only)
+    lines: List[str] = []
+    lines.append(f"Batch Find & Replace — {ts}")
+    lines.append(f"Rules: {report.get('rules', 0)}")
+    lines.append(f"Notes matched: {report.get('notes_touched', 0)}")
+    if dry:
+        lines.append(f"Notes that would change: {report.get('notes_would_change', 0)}")
+        lines.append(f"Notes actually changed (DRY RUN): {report.get('notes_changed', 0)}")
+    else:
+        lines.append(f"Notes changed: {report.get('notes_changed', 0)}")
+    lines.append(f"Guard skips: {report.get('guard_skips', 0)}")
+    lines.append("")
+    for per in report.get("per_rule", []):
+        lines.append(f"- Rule {per.get('index')}: fields={per.get('fields')} flags={per.get('flags')} loop={per.get('loop')}")
+        lines.append(f"  query={per.get('query')} exclude={per.get('exclude')}")
+        if per.get("search"):
+            lines.append(f"  search={per.get('search')}")
+        if per.get("error"):
+            lines.append(f"  error={per.get('error')}")
+        matched = per.get("notes_matched", 0)
+        would_change = per.get("notes_would_change", 0)
+        changed = per.get("notes_changed", 0)
+        subs = per.get("total_subs", 0)
+        guard_skips = per.get("guard_skips", 0)
+        rm_field_subs = per.get("remove_field_subs", 0)
+        # --- Fetch remove-loop metrics for summary
+        rm_loop = per.get("remove_loop", False)
+        rm_max_loops = per.get("remove_max_loops", 0)
+        rm_loops_sum = per.get("remove_loops_used_sum", per.get("remove_loops_used", 0))
+        rm_loops_max = per.get("remove_loops_used_max", 0)
+        rm_fields_looped = per.get("remove_fields_looped", 0)
+        rm_cap_hits = per.get("remove_cap_hits", 0)
+        rm_cycle_hits = per.get("remove_cycle_hits", 0)
+        rm_empty_forced = per.get("remove_empty_match_forced_single", 0)
+
+        # --- Fetch main-rule loop metrics for summary
+        fr_loop = per.get("fr_loop", False)
+        fr_loops_used = per.get("fr_loops_used", 0)
+        fr_empty_forced = per.get("fr_empty_match_forced_single", 0)
+        fr_break_stable = per.get("fr_break_stable", 0)
+        fr_break_cap = per.get("fr_break_cap", 0)
+        fr_break_cycle = per.get("fr_break_cycle", 0)
+
+        if dry:
+            lines.append(
+                f"  matched={matched} "
+                f"would_change={would_change} "
+                f"subs={subs} "
+                f"guard_skips={guard_skips} "
+                f"rm_field_subs={rm_field_subs} "
+                f"rm_loop={rm_loop} "
+                f"rm_loops_sum={rm_loops_sum} "
+                f"rm_loops_max={rm_loops_max} "
+                f"rm_fields_looped={rm_fields_looped} "
+                f"rm_cap_hits={rm_cap_hits} "
+                f"rm_cycle_hits={rm_cycle_hits} "
+                f"rm_empty_forced={rm_empty_forced} "
+                f"rm_max_loops={rm_max_loops} "
+                f"fr_loop={fr_loop} "
+                f"fr_loops_used={fr_loops_used} "
+                f"fr_break_stable={fr_break_stable} "
+                f"fr_break_cap={fr_break_cap} "
+                f"fr_break_cycle={fr_break_cycle} "
+                f"fr_empty_forced={fr_empty_forced}"
+            )
+        else:
+            lines.append(
+                f"  matched={matched} "
+                f"changed={changed} "
+                f"subs={subs} "
+                f"guard_skips={guard_skips} "
+                f"rm_field_subs={rm_field_subs} "
+                f"rm_loop={rm_loop} "
+                f"rm_loops_sum={rm_loops_sum} "
+                f"rm_loops_max={rm_loops_max} "
+                f"rm_fields_looped={rm_fields_looped} "
+                f"rm_cap_hits={rm_cap_hits} "
+                f"rm_cycle_hits={rm_cycle_hits} "
+                f"rm_empty_forced={rm_empty_forced} "
+                f"rm_max_loops={rm_max_loops} "
+                f"fr_loop={fr_loop} "
+                f"fr_loops_used={fr_loops_used} "
+                f"fr_break_stable={fr_break_stable} "
+                f"fr_break_cap={fr_break_cap} "
+                f"fr_break_cycle={fr_break_cycle} "
+                f"fr_empty_forced={fr_empty_forced}"
+            )
+        ex = per.get("examples", [])
+        for i, e in enumerate(ex, 1):
+            lines.append(f"  ex{i} [{e.get('field','?')}]: BEFORE: {e.get('before','')}")
+            lines.append(f"  ex{i} [{e.get('field','?')}]: AFTER : {e.get('after','')}")
+        lines.append("")
+
+    # Store the text summary in the report (no files written here)
+    details_txt = "\n".join(lines)
+    report["details_txt"] = details_txt

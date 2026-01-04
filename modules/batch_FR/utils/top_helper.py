@@ -7,18 +7,36 @@ from typing import List, Optional, Dict, Any, TypedDict, Set
 import json
 import os
 
+from .data_defs import BatchFRConfig
 
 from .FR_global_utils import (
     TS_FORMAT,
     DESKTOP_PATH,
     MODULES_CONFIG_PATH, 
-    BatchFRConfig,
     now_stamp, 
     _coerce_int,
     _norm_path,
     RULES_PATH,
 )
 
+def load_modules_config_snapshot(config_path: Path | str | None = None) -> Dict[str, Any]:
+    """Load the full modules_config.json as a dict.
+
+    UI code should pass this full snapshot to the engine so `global_config` (log_dir/ts_format)
+    and `batch_FR_config` are both available.
+    """
+    cfg_path = Path(config_path) if config_path else Path(MODULES_CONFIG_PATH)
+    try:
+        cfg_path = cfg_path.expanduser().resolve()
+    except Exception:
+        cfg_path = Path(str(cfg_path))
+
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig:
@@ -102,9 +120,6 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
         batch_debug_cfg = {}
     anki_regex_check_val = b.get("anki_regex_check", True)
 
-    # Update top-level constants so timestamps/tooltips match config
-    globals()["TS_FORMAT"] = ts_fmt
-    globals()["DESKTOP"] = log_dir_path
 
     # Remove settings: propagate to top-level snapshot for engine/remove_runner
     remove_rules_suffix = (
@@ -122,7 +137,12 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
     snapshot: BatchFRConfig = {
         "ts_format": ts_fmt,
         "log_dir": str(log_dir_path),
-        "rules_path": str(rules_path) if rules_path else str(RULES_PATH),
+        # * Always store an absolute rules root so downstream discovery never depends on cwd
+        "rules_path": str(
+            rules_path
+            if rules_path
+            else (Path(MODULES_CONFIG_PATH).expanduser().resolve().parent / str(RULES_PATH)).resolve()
+        ),
         "fields_all": list(fields_all) if isinstance(fields_all, list) else [],
         "defaults": dict(defaults) if isinstance(defaults, dict) else {},
         "remove_config": remove_cfg,
@@ -161,51 +181,37 @@ def _get_rules_root(cfg: BatchFRConfig) -> Path | None:
 # ------------------------------
 # Public API wrappers
 # ------------------------------
-
 def _discover_rule_files(cfg: BatchFRConfig) -> List[Path]:
     """Discover candidate rule files from the configured rules_path.
 
-    Uses the shared rules_io helpers so we include .json/.jsonl/.txt
+    Uses the shared rules_io helper `discover_from_config` so we include .json/.jsonl/.txt
     and respect any order_preference in the config.
     """
-    # Lazy import so top-level import of this module remains robust even if
-    # utils/rules_io.py has issues (e.g., during testing).
+    # Lazy import so top-level import remains robust during partial failures.
     try:
-        from .rules_io import discover_rule_files, sort_paths_by_preference  # type: ignore
+        from .rules_io import discover_from_config  # type: ignore
     except Exception:
         return []
 
-    rules_path_str = cfg.get("rules_path") or ""
-    if not rules_path_str:
+    rules_root = _get_rules_root(cfg)
+    if rules_root is None:
         return []
 
-    # Discover files under the configured rules_path
-    try:
-        paths = discover_rule_files(rules_path_str)
-    except Exception:
-        return []
-
-    # Apply optional ordering preferences if provided
     order_pref = cfg.get("order_preference") or cfg.get("order_prefernce") or {}
+
     try:
-        paths = sort_paths_by_preference(list(paths), order_pref)  # type: ignore[arg-type]
+        paths = discover_from_config(str(rules_root), order_pref)
+
+        # De-duplicate while preserving order
+        seen: Set[Path] = set()
+        out: List[Path] = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
     except Exception:
-        # Fallback: sort by filename only
-        try:
-            paths = sorted(paths, key=lambda p: p.name.lower())
-        except Exception:
-            pass
-
-    # De-duplicate while preserving order
-    seen = set()
-    unique_files: List[Path] = []
-    for p in paths:
-        if p not in seen:
-            seen.add(p)
-            unique_files.append(p)
-
-    return unique_files
-
+        return []
 
 # ------------------------------
 # Rule alias helpers
@@ -352,7 +358,6 @@ def _load_rule_favorites(rule_files: List[Path]) -> Set[str]:
             items = data.get("favorites") or []
             if isinstance(items, list):
                 favorites = {str(x) for x in items}
-        favorites = set()
     # Only keep entries that match an existing rule file by filename
     existing_names = {p.name for p in rule_files}
     filtered = favorites & existing_names

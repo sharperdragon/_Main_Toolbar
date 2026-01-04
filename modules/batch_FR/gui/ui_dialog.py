@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional
 import json
 
 from ..utils.top_helper import (
-    _get_alias_file_path,
     _load_rule_aliases,
     _pretty_rule_file_label as _pretty_label_for_file,
     _group_rule_files_by_folder,
@@ -210,10 +209,13 @@ class BatchFRHtmlDialog(QDialog):
             # Require at least one file; do not close if empty
             return
 
+        # * Normalize to JSON-safe primitives (strings), and provide both legacy and canonical keys.
+        selected = [str(p) for p in paths]
         self._result = {
             "dry_run": dry_run,
             "extensive_debug": extensive_debug,
-            "rule_files": paths,
+            "rule_files": selected,   # legacy key used by older glue
+            "rules_files": selected,  # canonical key
         }
         self.accept()
 
@@ -1123,12 +1125,16 @@ def prompt_batch_fr_run_options(
 
     dry_run = bool(payload.get("dry_run", True))
     extensive_debug = bool(payload.get("extensive_debug", False))
-    selected = payload.get("rule_files") or []
+    selected = payload.get("rules_files") or payload.get("rule_files") or []
     if not selected:
         return None
+
+    # * Ensure List[str]
+    selected_str = [str(x) for x in selected]
 
     return {
         "dry_run": dry_run,
         "extensive_debug": extensive_debug,
-        "rules_files": selected,
+        "rules_files": selected_str,
+        "rule_files": selected_str,  # compat alias
     }

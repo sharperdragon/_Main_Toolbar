@@ -66,7 +66,6 @@ def run_batch_find_replace(
         mw_ref,
         rulesets=rulesets,
         remove_rules=remove_rules,
-        field_remove_rules=field_remove_rules,
         config_snapshot=cfg,   # pass normalized config
         dry_run=dry_run,
         show_progress=show_progress,
@@ -114,6 +113,30 @@ def run_from_toolbar() -> None:
     dry_run = bool(opts.get("dry_run", True))
     extensive_debug = bool(opts.get("extensive_debug", False))
     selected_files: List[Path] = opts.get("rules_files", []) or []
+    # ? If user selected a remove-rule TXT (ends with remove_rule(s).txt), pass it as remove_rules.
+    # ? This ensures the engine/remove_runner treats it as removals and can write a dedicated remove log.
+    selected_remove_txt: List[Path] = []
+    try:
+        for p in selected_files:
+            name = p.name.lower()
+            if name.endswith("remove_rule.txt") or name.endswith("remove_rules.txt"):
+                selected_remove_txt.append(p)
+    except Exception:
+        selected_remove_txt = []
+
+    remove_rules_sel: Optional[Path] = selected_remove_txt[0] if selected_remove_txt else None
+
+    # ! If multiple remove TXT files were selected, we will use the first one.
+    if selected_remove_txt and len(selected_remove_txt) > 1:
+        try:
+            from aqt.utils import tooltip  # type: ignore
+            tooltip(
+                f"Batch F&R: multiple remove-rule TXT files selected; using: {remove_rules_sel.name}",
+                period=6000,
+            )
+        except Exception:
+            pass
+
     if not selected_files:
         # Defensive: nothing selected, treat as cancelled.
         try:
@@ -130,6 +153,7 @@ def run_from_toolbar() -> None:
         report = run_batch_find_replace(
             mw,
             rulesets=[],
+            remove_rules=remove_rules_sel,
             config_path=None,
             dry_run=dry_run,
             extensive_debug=extensive_debug,
@@ -138,8 +162,51 @@ def run_from_toolbar() -> None:
             rules_files=selected_files,
         )
     except Exception:
-        # If something went wrong, we still want to show a basic tooltip below.
-        report = {}
+        # ! Do not silently swallow errors; write a crash log so the UI never looks like a no-op.
+        import traceback
+        from pathlib import Path
+
+        tb = traceback.format_exc()
+        crash_path = None
+
+        try:
+            log_dir = Path(str(cfg.get("log_dir", "~/Desktop/anki_logs/Main_toolbar"))).expanduser()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            crash_path = log_dir / f"Batch_FR_Crash__{now_stamp()}.txt"
+            crash_path.write_text(
+                "\n".join([
+                    "Batch_FR toolbar run crashed.",
+                    f"dry_run={dry_run}",
+                    f"extensive_debug={extensive_debug}",
+                    f"selected_files_count={len(selected_files)}",
+                    "selected_files (first 20):",
+                    *[f"  - {str(p)}" for p in (selected_files[:20] if isinstance(selected_files, list) else [])],
+                    "\nTRACEBACK:\n" + tb,
+                ]),
+                encoding="utf-8",
+            )
+        except Exception:
+            # Best-effort only.
+            crash_path = None
+
+        # Provide an error-shaped report so downstream UI can show something meaningful.
+        report = {
+            "error": "Batch F&R crashed in toolbar wrapper. See crash log for details.",
+            "errors": [tb],
+            "crash_log": str(crash_path) if crash_path else "",
+            "rules": 0,
+            "notes_would_change": 0,
+            "notes_changed": 0,
+        }
+
+        try:
+            from aqt.utils import tooltip  # type: ignore
+            if crash_path:
+                tooltip(f"Batch F&R failed • crash log written: {crash_path.name}", period=8000)
+            else:
+                tooltip("Batch F&R failed • crash log could not be written (see console)", period=8000)
+        except Exception:
+            pass
 
     # * Optional: notify user; avoid modal spam – a brief tooltip is nice
     try:
@@ -155,6 +222,21 @@ def run_from_toolbar() -> None:
             # Fallback: simple completion message.
             tooltip(f"Batch F&R {mode_label} complete • {ts}", period=3000)
         else:
+            # ! If the run returned an error, show it instead of a misleading 0/0 summary.
+            err_msg = ""
+            try:
+                err_msg = str(report.get("error") or "").strip()
+                if not err_msg:
+                    errs = report.get("errors") or []
+                    if isinstance(errs, list) and errs:
+                        err_msg = str(errs[0])[:200].strip()
+            except Exception:
+                err_msg = ""
+
+            if err_msg:
+                tooltip(f"Batch F&R failed: {err_msg} • {ts}", period=8000)
+                return
+
             rules = int(report.get("rules", 0) or 0)
             unique_notes = report.get("unique_notes_touched")
             notes_touched = report.get("notes_touched", 0) or 0
@@ -209,10 +291,17 @@ def run_from_toolbar() -> None:
 
         md_path = report_paths.get("debug_markdown")
         txt_path = report_paths.get("details_txt")
+        remove_md_path = report_paths.get("remove_markdown")
 
         if open_md and md_path:
             try:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(md_path)))
+            except Exception:
+                pass
+
+        if open_md and remove_md_path:
+            try:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(remove_md_path)))
             except Exception:
                 pass
 

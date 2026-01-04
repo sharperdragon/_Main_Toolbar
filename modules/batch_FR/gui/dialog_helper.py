@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 import json
 
+
 from ..utils.top_helper import (
     _load_rule_aliases,
     _pretty_rule_file_label as _pretty_label_for_file,
@@ -10,6 +11,9 @@ from ..utils.top_helper import (
     _rule_group_and_name,
     _load_rule_favorites,
 )
+
+# * Execution entrypoint (UI -> engine)
+from ..utils.engine import run_batch_find_replace
 
 
 def build_initial_context(
@@ -257,3 +261,79 @@ def build_rules_panel_html(gui_dir: Path) -> str:
     html = html.replace("{{ favs_style }}", favs_css)
     html = html.replace("{{ rules_script }}", js)
     return html
+
+
+# -----------------------------------------------------------------------------
+# UI -> Engine execution helper
+# -----------------------------------------------------------------------------
+
+def _coerce_selected_rule_paths(payload: Dict[str, Any]) -> List[str]:
+    """Extract selected rule file paths from the UI payload.
+
+    The JS UI historically used different keys over time:
+      - "files"        (current JS submit payload)
+      - "rule_files"   (older Python glue)
+      - "rules_files"  (newer Python glue)
+
+    This helper accepts all of them and returns a stable List[str].
+    """
+    raw = (
+        payload.get("files")
+        or payload.get("rule_files")
+        or payload.get("rules_files")
+        or []
+    )
+
+    if raw is None:
+        return []
+
+    # Already a single string
+    if isinstance(raw, str):
+        return [raw]
+
+    # Typical: list of strings
+    if isinstance(raw, list):
+        out: List[str] = []
+        for item in raw:
+            if item is None:
+                continue
+            if isinstance(item, Path):
+                out.append(str(item))
+            else:
+                out.append(str(item))
+        return out
+
+    # Fallback: anything else
+    return [str(raw)]
+
+
+def execute_batch_fr_from_payload(
+    payload: Dict[str, Any],
+    *,
+    mw_ref: Any,
+    config_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Run Batch Find & Replace from an HTML dialog payload.
+
+    This is the ONE place that translates UI payload -> engine call.
+
+    Required behavior:
+      - Always call the real engine (`utils.engine.run_batch_find_replace`).
+      - Pass full `config_snapshot` (modules_config.json dict).
+      - Treat UI-selected files as `rulesets`.
+
+    Returns the engine report dict.
+    """
+    selected_paths = _coerce_selected_rule_paths(payload)
+    dry_run = bool(payload.get("dry_run", True))
+
+    # Engine will auto-discover if rulesets is empty, but we still pass selections when present.
+    report = run_batch_find_replace(
+        mw_ref,
+        rulesets=selected_paths or None,
+        config_snapshot=config_snapshot,
+        dry_run=dry_run,
+        show_progress=True,
+    )
+
+    return report

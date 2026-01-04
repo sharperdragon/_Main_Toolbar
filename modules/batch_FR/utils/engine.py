@@ -1,147 +1,609 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, Set
+from typing import Any, Dict, List, Optional, Sequence, Union
 import re
 import json
 
-# * Anki/Qt import guarded for testability
+# * Anki import guarded for import/test safety
 try:
-    from aqt import mw
+    from aqt import mw  # type: ignore
 except Exception:
-    mw = None 
+    mw = None  # type: ignore
 
+from .data_defs import Rule, RunConfig
 from .rules_io import (
-    load_rules_from_file,
     load_rules_from_config,
-    normalize_rule,
+    load_rules_from_file,
+    to_rule,
+    discover_from_config,
+    discover_rule_files,
+    resolve_rules_root,
 )
+from .anki_query_utils import compose_search, effective_query
 from .regex_utils import (
-    apply_rule_defaults,
-    validate_regex_replacement,
-    subn_until_stable,
+    apply_rule_to_text,
     deletion_exceeds_limit,
-    ensure_dir,
-    ensure_parent,
-    flags_from_str,
-    apply_substitution,
     basic_html_cloze_balance_ok,
 )
-from .text_utils import safe_truncate
+from .remove_runner import (
+    run_remove_for_field,
+    maybe_write_remove_debug_for_selection,
+    build_remove_context,
+    write_remove_debug_md,
+)
+from .config_utils import normalize_modules_snapshot
 from .logger import write_batch_fr_debug, write_regex_debug
-from datetime import datetime
 
-from ...log_cleanup import delete_old_anki_log_files, LOGS_ROOT
+# * Optional log cleanup (keep engine resilient if module not present)
+try:
+    from ...log_cleanup import delete_old_anki_log_files, LOGS_ROOT  # type: ignore
+except Exception:
+    delete_old_anki_log_files = None  # type: ignore
+    LOGS_ROOT = None  # type: ignore
+
 
 __all__ = ["run_batch_find_replace"]
 
-from .FR_global_utils import (
-    Rule,
-    RunConfig,
-    TS_FORMAT,
-    _coerce_int,
-    _norm_path,
-)
+TS_FORMAT = "%H-%M_%m-%d"
 
-from .remove_runner import run_remove_for_field, build_remove_context, maybe_write_remove_debug_for_selection
+# ! Debug log example capture limits (keep logs readable)
+MAX_EXAMPLES_PER_RULE = 3
+MAX_EXAMPLE_CHARS = 240
 
 
-# ---------------------------------------------------------------------
-# Loop-safe main-rule application (engine-level)
-# ---------------------------------------------------------------------
+def _preview_snip(s: str, limit: int = MAX_EXAMPLE_CHARS) -> str:
+    """Return a short, log-friendly preview of text.
 
-def _compiled_can_match_empty(patt: str, flags: str) -> bool:
-    """Return True if the regex pattern can match the empty string."""
+    - Normalizes newlines to literal `\\n` so markdown tables stay intact.
+    - Truncates long content to avoid huge logs.
+    """
     try:
-        rx = re.compile(patt, flags_from_str(flags))
-        return rx.search("") is not None
+        t = "" if s is None else str(s)
     except Exception:
+        t = ""
+
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    t = t.replace("\n", "\\n")
+
+    if len(t) > int(limit):
+        return t[: int(limit)] + "…"
+    return t
+
+# =========================
+# Config shaping
+# =========================
+def _coerce_run_config(cfg_snapshot: Dict[str, Any]) -> RunConfig:
+    """Coerce the UI/config snapshot into a RunConfig dataclass.
+
+    Keep this conservative: preserve existing keys and defaults.
+    """
+    defaults = dict(cfg_snapshot.get("Defaults") or cfg_snapshot.get("defaults") or {})
+    # modules_config.json uses "Defaults" and "Remove_Config" style keys
+    remove_cfg = dict(cfg_snapshot.get("Remove_Config") or cfg_snapshot.get("remove_config") or {})
+    order_pref = dict(cfg_snapshot.get("order_preference") or {})
+
+    fields_all = list(cfg_snapshot.get("fields_all") or cfg_snapshot.get("Fields_All") or [])
+    rules_path = str(cfg_snapshot.get("rules_path") or cfg_snapshot.get("Rules_Path") or "")
+
+    return RunConfig(
+        ts_format=str(cfg_snapshot.get("ts_format") or cfg_snapshot.get("TS_FORMAT") or TS_FORMAT),
+        log_dir=str(cfg_snapshot.get("log_dir") or cfg_snapshot.get("LOG_DIR") or ""),
+        rules_path=rules_path,
+        fields_all=fields_all,
+        defaults=defaults,
+        remove_config=remove_cfg,
+        log_mode=str(cfg_snapshot.get("log_mode") or cfg_snapshot.get("LOG_MODE") or "auto"),
+        include_unchanged=bool(cfg_snapshot.get("include_unchanged", False)),
+        max_loops=int(cfg_snapshot.get("max_loops") or cfg_snapshot.get("MAX_LOOPS") or 50),
+        order_preference=order_pref,
+    )
+
+
+# =========================
+# Engine helpers
+# =========================
+def _as_path(x: Union[str, Path]) -> Path:
+    return x if isinstance(x, Path) else Path(str(x))
+
+def _resolve_rule_input_path(x: Union[str, Path]) -> Path:
+    """Resolve rule file/dir inputs deterministically.
+
+    UI often sends absolute paths (best). Config may send relative paths like:
+      - batch_FR/rules/...
+      - modules/batch_FR/rules/...
+
+    We resolve relative paths against the add-on root + modules/.
+    """
+    p = _as_path(x).expanduser()
+
+    # Absolute paths are already unambiguous
+    try:
+        if p.is_absolute():
+            return p.resolve()
+    except Exception:
+        pass
+
+    parts = p.parts
+    addon_root = _modules_dir_from_engine().parent  # .../_Main_Toolbar
+
+    # Support paths that start with "modules/..." relative to add-on root
+    if parts and parts[0] == "modules":
+        return (addon_root / p).resolve()
+
+    # Default: relative to modules/
+    return (_modules_dir_from_engine() / p).resolve()
+
+def _expand_ruleset_inputs(
+    raw: Optional[Sequence[Union[str, Path]]],
+    cfg: RunConfig,
+) -> List[Path]:
+    """Expand a mixed list of file/dir inputs into concrete rule FILE paths.
+
+    The UI can present folders (e.g., 'Main', 'zBeta/_Top') as selectable items.
+    If a folder is selected, we expand it into the rule files it contains.
+    """
+    if not raw:
+        return []
+
+    out: List[Path] = []
+    order_pref = dict(getattr(cfg, "order_preference", {}) or {})
+
+    for item in raw:
+        p = _resolve_rule_input_path(item)
+        try:
+            if p.exists() and p.is_dir():
+                # Prefer the same discovery logic used by config-based discovery.
+                try:
+                    discovered = discover_from_config(str(p), order_pref)
+                    out.extend([Path(x) for x in discovered])
+                except Exception:
+                    # Fallback to direct recursive glob.
+                    out.extend(discover_rule_files(p))
+            else:
+                out.append(p)
+        except Exception:
+            out.append(p)
+
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    uniq: List[Path] = []
+    for p in out:
+        s = str(p)
+        if s in seen:
+            continue
+        seen.add(s)
+        uniq.append(p)
+    return uniq
+
+def _guard_exceeded(rule: Rule, before: str, after: str) -> bool:
+    """Deletion guard for main rules (JSON/JSONL)."""
+    try:
+        limit = int((rule.delete_chars or {}).get("max_chars", 0))
+        count_spaces = bool((rule.delete_chars or {}).get("count_spaces", True))
+    except Exception:
+        limit, count_spaces = 0, True
+
+    exceeded, _deleted = deletion_exceeds_limit(before, after, limit, count_spaces=count_spaces)
+    return exceeded
+
+
+def _remove_guard_exceeded(cfg: RunConfig, before: str, after: str) -> bool:
+    """Deletion guard for remove rules (uses cfg.remove_config.delete_chars)."""
+    try:
+        dc = (cfg.remove_config or {}).get("delete_chars", {})
+        limit = int(dc.get("max_chars", 0))
+        count_spaces = bool(dc.get("count_spaces", True))
+    except Exception:
+        limit, count_spaces = 0, True
+
+    # Convention: negative max_chars means "no limit"
+    if limit < 0:
         return False
 
+    exceeded, _deleted = deletion_exceeds_limit(before, after, limit, count_spaces=count_spaces)
+    return exceeded
 
-def _apply_patterns_loop_safe(
-    *,
-    patterns: List[str],
-    repl: str,
-    text: str,
-    is_regex: bool,
-    flags: str,
-    loops_cap: int,
-    per: Dict[str, Any],
-) -> tuple[str, int, int, str]:
-    """Apply the rule's pattern list with deterministic looping.
 
-    A "loop" here means: apply ALL patterns once (in order) = 1 pass.
+def _resolve_target_fields(note: Any, rule_fields: List[str], fields_all: List[str]) -> List[str]:
+    """Resolve fields to process for a given note.
 
-    Break conditions:
-    - 0 substitutions in a pass OR no net change -> stable
-    - output repeats a prior state -> cycle
-    - pass cap reached -> cap
-
-    Returns (final_text, total_subs, passes_used, break_reason)
-    break_reason in {'stable','cycle','cap'}
+    - If rule_fields == ['ALL'] -> use fields_all
+    - Else use rule_fields
+    - Filter to fields that exist on the note
     """
-    if loops_cap < 1:
-        loops_cap = 1
+    wanted = rule_fields or ["ALL"]
+    if len(wanted) == 1 and str(wanted[0]).upper() == "ALL":
+        wanted = list(fields_all)
 
-    # If looping is enabled and ANY pattern can match empty, force single-pass.
-    # Empty-matchable regexes are a classic source of runaway looping.
-    if is_regex and loops_cap > 1:
+    present = []
+    for f in wanted:
+        fs = str(f).strip()
+        if not fs:
+            continue
         try:
-            for p in patterns:
-                if _compiled_can_match_empty(p, flags):
-                    per["fr_empty_match_forced_single"] = per.get("fr_empty_match_forced_single", 0) + 1
-                    loops_cap = 1
-                    break
+            # Note supports __contains__ for field names
+            if fs in note:
+                present.append(fs)
+        except Exception:
+            # Fallback: try fields dict
+            try:
+                _ = note[fs]
+                present.append(fs)
+            except Exception:
+                continue
+    return present
+
+
+def _init_report(cfg: RunConfig, *, dry_run: bool) -> Dict[str, Any]:
+    return {
+        "dry_run": bool(dry_run),
+        "errors": [],
+        "ts_format": cfg.ts_format or TS_FORMAT,
+        "log_dir": cfg.log_dir,
+        "rules": 0,
+        # Canonical name used by logger
+        "notes_touched": 0,
+        # Back-compat alias (mirrors notes_touched)
+        "notes_matched": 0,
+        "notes_would_change": 0,
+        "notes_changed": 0,
+        "total_subs": 0,
+        "guard_skips": 0,
+        "invalid_rules": [],
+        "per_rule": [],  # logger expects `per_rule`
+    }
+def _maybe_write_debug_logs(
+    report: Dict[str, Any],
+    cfg: RunConfig,
+    *,
+    snap: Dict[str, Any],
+    debug_cfg: Dict[str, Any],
+    regex_debug_cfg: Dict[str, Any],
+    anki_regex_check: bool,
+) -> None:
+    """Best-effort debug log writing.
+
+    Key goal: avoid the UI showing a silent '0 notes / 0 rules' run with no logs.
+    """
+    debug_enabled = bool(debug_cfg.get("enabled", True))
+
+    try:
+        if debug_enabled:
+            write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
+    except Exception as e:
+        report["log_error"] = str(e)
+
+    try:
+        if "regex_debug" in snap:
+            regex_enabled = bool(regex_debug_cfg.get("enabled", False))
+        else:
+            regex_enabled = debug_enabled
+
+        if anki_regex_check or regex_enabled:
+            effective_regex_cfg = dict(debug_cfg)
+            effective_regex_cfg.update(regex_debug_cfg)
+            write_regex_debug(report, cfg, debug_cfg=effective_regex_cfg)
+    except Exception as e:
+        report["regex_log_error"] = str(e)
+
+
+def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
+    """Per-rule stats record (stable keys for logger + remove_runner)."""
+    patt_disp = rule.pattern if isinstance(rule.pattern, str) else (rule.pattern[:1] if rule.pattern else "")
+
+    # Raw query inputs (often empty; rules_io normalizes missing query to [])
+    include_input: List[str] = []
+    if isinstance(rule.query, list):
+        include_input = [str(x) for x in rule.query]
+    elif isinstance(rule.query, str) and rule.query.strip():
+        include_input = [rule.query.strip()]
+
+    # Effective include clauses actually used by compose_search:
+    # - if include_input is empty, this derives from pattern/fields (e.g., Text:re:...)
+    try:
+        include_effective = [str(x) for x in (effective_query(rule) or [])]
+    except Exception:
+        include_effective = list(include_input)
+
+    exclude_clauses: List[str] = []
+    if isinstance(rule.exclude_query, list):
+        exclude_clauses = [str(x) for x in rule.exclude_query]
+    elif isinstance(rule.exclude_query, str) and rule.exclude_query.strip():
+        exclude_clauses = [rule.exclude_query.strip()]
+
+    return {
+        "index": idx,
+        "file": getattr(rule, "source_file", "") or "",
+        "source_file": getattr(rule, "source_file", "") or "",
+        "source_path": getattr(rule, "source_path", "") or "",
+        "source_index": rule.source_index,
+        # `query` is what the engine effectively uses (derived when input is empty)
+        "query": include_effective,
+        # `query_input` is what the user/rule file explicitly provided (often empty)
+        "query_input": include_input,
+        "exclude": exclude_clauses,
+        "exclude_input": exclude_clauses,
+        "pattern": patt_disp,
+        "flags": rule.flags,
+        "fields": rule.fields,
+        "loop": rule.loop,
+        "replacement": rule.replacement,
+        # Search string (precomputed)
+        "search": "",
+        "search_repr": "",
+        # Note counters
+        "notes_matched": 0,
+        "notes_would_change": 0,
+        "notes_changed": 0,
+        "total_subs": 0,
+        "guard_skips": 0,
+        # Loop accounting (JSON rules)
+        "fr_loop": False,
+        "fr_loops_used": 0,
+        "fr_break_stable": 0,
+        "fr_break_cap": 0,
+        "fr_break_cycle": 0,
+        "fr_empty_match_forced_single": 0,
+        # Remove accounting (remove_runner updates these)
+        "remove_loop": False,
+        "remove_max_loops": 0,
+        "remove_loops_used": 0,
+        "remove_loops_used_sum": 0,
+        "remove_loops_used_max": 0,
+        "remove_fields_looped": 0,
+        "remove_cap_hits": 0,
+        "remove_cycle_hits": 0,
+        "remove_empty_match_forced_single": 0,
+        "remove_field_subs": 0,
+        # Examples
+        "examples": [],
+        "error": "",
+    }
+
+
+def _append_rule_summary(report: Dict[str, Any], per: Dict[str, Any]) -> None:
+    report["rules"] += 1
+    inc = int(per.get("notes_matched", 0) or 0)
+    report["notes_touched"] += inc
+    report["notes_matched"] += inc  # alias
+    report["notes_would_change"] += int(per.get("notes_would_change", 0) or 0)
+    report["notes_changed"] += int(per.get("notes_changed", 0) or 0)
+    report["total_subs"] += int(per.get("total_subs", 0) or 0)
+    report["guard_skips"] += int(per.get("guard_skips", 0) or 0)
+    report["per_rule"].append(per)
+
+
+def _run_remove_only_batch(
+    mw_work: Any,
+    *,
+    cfg: RunConfig,
+    cfg_snapshot: Dict[str, Any],
+    report: Dict[str, Any],
+    query: str,
+    dry: bool,
+    notes_limit: Optional[int],
+    remove_rules: Optional[Union[str, Path]],
+) -> Any:
+    """Execute only the remove pipeline across notes matching `query`.
+
+    Restores legacy behavior where remove rules can run even if no JSON rules loaded.
+    """
+    per: Dict[str, Any] = {
+        "index": int(len(report.get("per_rule") or [])) + 1,
+        "file": "(remove-only)",
+        "source_file": "(remove-only)",
+        "source_path": "(remove-only)",
+        "source_index": 0,
+        "query": [query],
+        "exclude": [],
+        "pattern": "(remove-only)",
+        "flags": "",
+        "fields": ["ALL"],
+        "loop": True,
+        "replacement": "",
+        "search": query,
+        "search_repr": repr(query),
+        "notes_matched": 0,
+        "notes_would_change": 0,
+        "notes_changed": 0,
+        "total_subs": 0,
+        "guard_skips": 0,
+        # Remove accounting (run_remove_for_field updates these when present)
+        "remove_loop": False,
+        "remove_max_loops": 0,
+        "remove_loops_used": 0,
+        "remove_loops_used_sum": 0,
+        "remove_loops_used_max": 0,
+        "remove_fields_looped": 0,
+        "remove_cap_hits": 0,
+        "remove_cycle_hits": 0,
+        "remove_empty_match_forced_single": 0,
+        "remove_field_subs": 0,
+        "examples": [],
+        "error": "",
+    }
+
+    # Find notes
+    try:
+        nids = mw_work.col.find_notes(query)
+    except Exception as e:
+        per["error"] = str(e)
+        _append_rule_summary(report, per)
+        return None
+
+    if notes_limit is not None:
+        try:
+            nids = nids[: int(notes_limit)]
         except Exception:
             pass
 
-    working = text
-    total_subs = 0
-    passes_used = 0
-    seen: Set[str] = {working}
+    per["notes_matched"] = len(nids)
 
-    for _ in range(loops_cap):
-        before_pass = working
-        pass_subs = 0
+    # Remove context is run-wide
+    remove_ctx = None
 
-        # One pass: apply each pattern exactly once.
-        for p in patterns:
-            working, subs, _ignored = apply_substitution(
-                p,
-                repl,
-                working,
-                is_regex=is_regex,
-                flags=flags,
-                max_loops=1,
+    for nid in nids:
+        note = mw_work.col.get_note(nid)
+        changed_this_note = False
+
+        # Fields: prefer cfg.fields_all; if empty, fall back to all note keys
+        try:
+            target_fields = list(cfg.fields_all or [])
+        except Exception:
+            target_fields = []
+        if not target_fields:
+            try:
+                target_fields = list(note.keys())
+            except Exception:
+                target_fields = []
+
+        for field in target_fields:
+            try:
+                before = note.get(field, "") if hasattr(note, "get") else note[field]
+            except Exception:
+                continue
+
+            working_candidate, remove_ctx = run_remove_for_field(
+                text=before,
+                field_name=str(field),
+                cfg=cfg,
+                cfg_snapshot=cfg_snapshot,
+                per=per,
+                ctx=remove_ctx,
+                remove_rules=remove_rules,
+                field_remove_rules=None,
+                log_dir=cfg.log_dir,
             )
-            if subs:
-                pass_subs += subs
 
-        passes_used += 1
-        if pass_subs:
-            total_subs += pass_subs
+            # Apply guards to remove delta only
+            working = before
+            if working_candidate != before:
+                if not basic_html_cloze_balance_ok(before, working_candidate):
+                    per["guard_skips"] += 1
+                    working = before
+                elif _remove_guard_exceeded(cfg, before, working_candidate):
+                    per["guard_skips"] += 1
+                    working = before
+                else:
+                    working = working_candidate
 
-        # Stable: no subs or no net change.
-        if pass_subs == 0 or working == before_pass:
-            return working, total_subs, passes_used, "stable"
+            if working == before:
+                continue
 
-        # Cycle guard: output repeats prior state.
-        if working in seen:
-            return working, total_subs, passes_used, "cycle"
-        seen.add(working)
+            changed_this_note = True
 
-    return working, total_subs, passes_used, "cap"
+            # * Capture a small before/after example for logs (cap per run-record)
+            try:
+                if len(per.get("examples") or []) < MAX_EXAMPLES_PER_RULE:
+                    per.setdefault("examples", []).append(
+                        {
+                            "field": str(field),
+                            "before": _preview_snip(before),
+                            "after": _preview_snip(working),
+                        }
+                    )
+            except Exception:
+                pass
+
+            if not dry:
+                note[str(field)] = working
+
+        if changed_this_note:
+            per["notes_would_change"] += 1
+            if not dry:
+                per["notes_changed"] += 1
+                mw_work.col.update_note(note)
+
+    # Prefer remove_runner's internal subs counter if present; otherwise keep total_subs as-is.
+    try:
+        per["total_subs"] = int(per.get("remove_field_subs", 0) or 0)
+    except Exception:
+        pass
+
+    _append_rule_summary(report, per)
+
+    return remove_ctx
 
 # =========================
 # Public entrypoint
 # =========================
+
+def _normalize_config_snapshot(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Accept either batch_FR_config dict OR full modules_config.json dict.
+
+    Returns a merged, mostly-flat dict where global_config overrides batch keys.
+    """
+    if not isinstance(config_snapshot, dict):
+        return {}
+
+    # If full modules_config.json was passed
+    if "batch_FR_config" in config_snapshot:
+        base = dict(config_snapshot.get("batch_FR_config") or {})
+        glob = dict(config_snapshot.get("global_config") or {})
+        base.update(glob)
+        return base
+
+    # Otherwise assume batch_FR_config already
+    return dict(config_snapshot)
+
+
+def _maybe_load_full_modules_config(mw_ref: Any, cfg_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """If caller passed only batch_FR_config (missing global_config), attempt to load full modules_config.json.
+
+    This prevents UI callsites from accidentally dropping log_dir / ts_format and other global settings.
+    """
+    try:
+        if not isinstance(cfg_snapshot, dict):
+            return {}
+
+        # Already a full snapshot (or at least has wrappers)
+        if "batch_FR_config" in cfg_snapshot or "global_config" in cfg_snapshot:
+            return cfg_snapshot
+
+        # Caller likely passed batch_FR_config only; load full file from disk
+        if mw_ref is None:
+            return cfg_snapshot
+
+        # 1) Primary: use Anki's addons folder (works when mw_ref is the real mw)
+        cfg_path = None
+        try:
+            modules_dir = Path(mw_ref.addonManager.addonsFolder()) / "_Main_Toolbar" / "modules"
+            cand = modules_dir / "modules_config.json"
+            if cand.exists():
+                cfg_path = cand
+        except Exception:
+            cfg_path = None
+
+        # 2) Fallback: derive from engine file location (works even if mw_ref is not real mw)
+        if cfg_path is None:
+            cand2 = _modules_dir_from_engine() / "modules_config.json"
+            if cand2.exists():
+                cfg_path = cand2
+
+        if cfg_path is None or not cfg_path.exists():
+            return cfg_snapshot
+
+        full = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if isinstance(full, dict) and "batch_FR_config" in full:
+            return full
+    except Exception:
+        pass
+
+    return cfg_snapshot
+
+
+def _modules_dir_from_engine() -> Path:
+    """Return the `_Main_Toolbar/modules` directory based on this file location."""
+    # engine.py -> utils/ -> batch_FR/ -> modules/
+    return Path(__file__).resolve().parents[2]
+
 def run_batch_find_replace(
     mw_ref,
     *,
-    rulesets: List[Union[str, Path, Dict[str, Any]]],
+    rulesets: Optional[List[Union[str, Path, Dict[str, Any]]]] = None,
     config_snapshot: Dict[str, Any],
     remove_rules: Optional[Union[str, Path]] = None,
-    field_remove_rules: Optional[Union[str, Path]] = None,
     dry_run: Optional[bool] = None,
     show_progress: bool = True,
     notes_limit: Optional[int] = None,
@@ -149,229 +611,317 @@ def run_batch_find_replace(
     remove_only_query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """\
-    * Orchestrate: load rules, search notes, apply, and log (pure in-Anki).
-    - Returns a summary report dict (file paths, counters, timings).
+    Orchestrate: load rules, search notes, apply remove + main rules, and log.
 
-    Note: `show_progress` is currently a placeholder; progress UI is not yet implemented.
+    - Keeps legacy semantics for search construction via anki_query_utils.compose_search()
+    - Applies text changes via regex_utils.apply_rule_to_text()
+    - Leaves remove_runner behavior unchanged (called per-field)
     """
-    cfg = _coerce_run_config(config_snapshot)
+    _ = show_progress  # placeholder (kept for API compatibility)
+
+    # Prefer explicit mw_ref, but fall back to global `aqt.mw`.
+    mw_work = mw_ref or mw
+    if mw_work is None:
+        raise RuntimeError("Anki mw not available (run inside Anki).")
+
+    # If the UI passed something that's not the real mw (missing .col), fall back.
+    if getattr(mw_work, "col", None) is None and mw is not None:
+        mw_work = mw
+
+    # * Self-heal: if UI passed only batch_FR_config, reload full modules_config.json
+    config_snapshot = _maybe_load_full_modules_config(mw_work, config_snapshot)
+
+    snap = normalize_modules_snapshot(config_snapshot)
+    cfg = _coerce_run_config(snap)
     dry = bool(dry_run) if dry_run is not None else False
-    # * Extensive debugging: optional heavy logging mode controlled by UI/config
-    extensive_debug = bool(config_snapshot.get("extensive_debug", False))
+    
+    # * Ensure a deterministic log_dir so logs can't "disappear" due to an empty or relative path.
+    #   Priority: cfg.log_dir -> LOGS_ROOT -> ~/Desktop/anki_logs/Main_toolbar
     try:
-        extensive_debug_max_examples = int(config_snapshot.get("extensive_debug_max_examples", 60))
+        if not str(cfg.log_dir or "").strip():
+            if LOGS_ROOT:
+                cfg.log_dir = str(Path(str(LOGS_ROOT)).expanduser())
+            else:
+                cfg.log_dir = str(Path("~/Desktop/anki_logs/Main_toolbar").expanduser())
+
+        # Normalize + create directory
+        _ld = Path(str(cfg.log_dir)).expanduser()
+        _ld.mkdir(parents=True, exist_ok=True)
+        cfg.log_dir = str(_ld)
     except Exception:
-        extensive_debug_max_examples = 60
+        # Keep engine resilient; errors are surfaced later via logger failure / report fields.
+        pass
+
+    # * Auto-discover rule files ONLY when caller provided neither rulesets nor explicit rules_files.
+    if (not rulesets) and (not (rules_files or [])):
+        try:
+            # cfg.rules_path may be:
+            #   - 'batch_FR/rules' (relative to modules/)
+            #   - 'modules/batch_FR/rules' (relative to add-on root)
+            #   - absolute
+            if not str(cfg.rules_path or "").strip():
+                rulesets = []
+            else:
+                rules_root = resolve_rules_root(str(cfg.rules_path))
+                discovered = discover_from_config(str(rules_root), cfg.order_preference)
+                rulesets = [str(p) for p in discovered]
+        except Exception:
+            rulesets = []
+
+    # * Debug config blocks (robust to normalize_modules_snapshot dropping unknown keys)
+    def _pick_cfg_block(key: str) -> Dict[str, Any]:
+        # 1) Prefer normalized snapshot
+        block = snap.get(key)
+        if isinstance(block, dict):
+            return dict(block)
+
+        # 2) Fallback to raw snapshot (full modules_config.json)
+        if isinstance(config_snapshot, dict) and "batch_FR_config" in config_snapshot:
+            bc = config_snapshot.get("batch_FR_config") or {}
+            if isinstance(bc, dict) and isinstance(bc.get(key), dict):
+                return dict(bc.get(key) or {})
+
+        # 3) Fallback to raw snapshot (batch-only dict)
+        if isinstance(config_snapshot, dict) and isinstance(config_snapshot.get(key), dict):
+            return dict(config_snapshot.get(key) or {})
+
+        return {}
+
+    debug_cfg = _pick_cfg_block("batch_fr_debug")
+    regex_debug_cfg = _pick_cfg_block("regex_debug")
+    anki_regex_check = bool(snap.get("anki_regex_check", False) or (isinstance(config_snapshot, dict) and config_snapshot.get("anki_regex_check", False)))
+
     # * Always run log cleanup at the end of a run (independent of debug/dry_run).
     #   Prefer the configured log_dir if present; otherwise fall back to the module default.
     cleanup_root = cfg.log_dir if getattr(cfg, "log_dir", None) else LOGS_ROOT
 
+    def _finalize(_report: Dict[str, Any]) -> Dict[str, Any]:
+        # ! Never allow cleanup failures to break a run
+        try:
+            if delete_old_anki_log_files:
+                delete_old_anki_log_files(
+                    base_dir=cleanup_root,
+                    dry_run=False,
+                )
+        except Exception:
+            pass
+        return _report
+
+    report = _init_report(cfg, dry_run=dry)
+    # * Provenance breadcrumbs to make UI/console debugging less opaque
+    report["engine_file"] = __file__
+    report["rulesets_in"] = [str(x) for x in (rulesets or [])]
+    report["rules_files_in"] = [str(x) for x in (rules_files or [])]
+
+    # ! Canonical keys used by logger/debug writers
+    #   - rules_files_selected: raw UI selection inputs
+    #   - rules_files_used: the concrete file list after expansion
+    report["rules_files_selected"] = list(report.get("rules_files_in") or [])
+    report["rules_files_used"] = []  # set later once expansion happens
+
+    # * Normalize report log_dir for downstream checks / tooling
     try:
-        # Remove settings now handled by remove_engine.RemoveContext
+        if report.get("log_dir"):
+            report["log_dir"] = str(Path(str(report["log_dir"])).expanduser())
+    except Exception:
+        pass
 
-        # 1) Discover + load rules (deterministic; honors order_preference, Defaults)
-        cfg_dict: Dict[str, Any] = dict(config_snapshot)
-        rules: List[Dict[str, Any]] = []
-        # Selected rule files from UI (used to decide whether to write Remove_FR_Debug)
-        selected_files: List[Any] = list(rules_files) if rules_files is not None else []
+    # * Run-wide config snapshot passed into remove_runner / remove-only
+    cfg_dict = dict(snap)
 
-        if rules_files is not None:
-            # * When a subset of rule files is provided (e.g. from the toolbar UI),
-            # * restrict loading to just those paths, but skip remove-rule files
-            remove_suffix = cfg_dict.get("remove_rules_suffix") or ""
-            field_remove_name = cfg_dict.get("field_remove_rules_name") or ""
+    # ! If there is no collection, do not proceed (otherwise the UI can look like a silent no-op).
+    if getattr(mw_work, "col", None) is None:
+        report["errors"].append("No collection loaded (mw.col is None).")
+        _maybe_write_debug_logs(
+            report,
+            cfg,
+            snap=snap,
+            debug_cfg=debug_cfg,
+            regex_debug_cfg=regex_debug_cfg,
+            anki_regex_check=anki_regex_check,
+        )
+        return _finalize(report)
 
-            for rf in rules_files:
-                try:
-                    name = Path(rf).name
-                except Exception:
-                    name = str(rf)
+    # -------------------------
+    # 1) Load rules (dicts) -> normalize -> dataclasses
+    # -------------------------
+    raw_rules: List[Dict[str, Any]] = []
 
-                # Skip known remove-rule files here; they are handled via load_remove_sets_from_config
-                if field_remove_name and name == field_remove_name:
-                    continue
-                if remove_suffix and name.endswith(remove_suffix):
-                    continue
+    # If the UI passed explicit rules_files, expand any directories into the rule files they contain.
+    selected_files: List[Path] = _expand_ruleset_inputs(rules_files, cfg)
 
-                try:
-                    rules.extend(
-                        load_rules_from_file(
-                            rf,
-                            defaults=cfg.defaults,
-                            fields_all=cfg.fields_all,
-                        )
-                    )
-                except Exception:
-                    # ignore bad paths; they will be surfaced via report if needed
-                    pass
+    # ? UI can pass TXT remove-rule files through `rules_files`. Treat them as `remove_rules`
+    # ? and do NOT try to parse them as JSON rule files.
+    selected_remove_txt: List[Path] = []
+    for p in list(selected_files):
+        try:
+            name = p.name.lower()
+        except Exception:
+            name = str(p).lower()
+
+        if name.endswith("remove_rule.txt") or name.endswith("remove_rules.txt"):
+            selected_remove_txt.append(p)
+
+    # Prefer an explicit `remove_rules=` argument, but fall back to the first selected TXT.
+    if remove_rules is None and selected_remove_txt:
+        remove_rules = selected_remove_txt[0]
+
+    # Prevent TXT remove rules from being fed into JSON rule parsing.
+    if selected_remove_txt:
+        selected_files = [p for p in selected_files if p not in selected_remove_txt]
+
+    # Expand any directory selections in rulesets (but keep dict-based rulesets intact).
+    _ruleset_dicts: List[Dict[str, Any]] = []
+    _ruleset_paths: List[Union[str, Path]] = []
+    for rs in rulesets or []:
+        if isinstance(rs, dict):
+            _ruleset_dicts.append(rs)
         else:
-            # * Default behavior: load according to config (rules_path, order_preference, etc.)
-            rules.extend(load_rules_from_config(cfg_dict))
+            _ruleset_paths.append(rs)
 
-        # Accept any in-memory rule dicts (normalize for safety)
-        rules.extend([normalize_rule(r) for r in rulesets if isinstance(r, dict)])
+    expanded_ruleset_paths = _expand_ruleset_inputs(_ruleset_paths, cfg)
+    rulesets = list(_ruleset_dicts) + [str(p) for p in expanded_ruleset_paths]
+    report["rulesets_expanded"] = [str(x) for x in (rulesets or [])]
+    report["rules_files_expanded"] = [str(p) for p in selected_files]
 
-        # Also accept rule file paths passed in rulesets
-        for rs in rulesets:
-            if isinstance(rs, (str, Path)):
-                try:
-                    rules.extend(
-                        load_rules_from_file(
-                            rs,
-                            defaults=cfg.defaults,
-                            fields_all=cfg.fields_all,
-                        )
+    # Keep a stable key for loggers (some loggers look for `rules_files_used`)
+    report["rules_files_used"] = list(report.get("rules_files_expanded") or [])
+
+    # Load from rulesets (paths or dict configs)
+    for rs in rulesets or []:
+        try:
+            if isinstance(rs, dict):
+                raw_rules.extend(load_rules_from_config(rs))
+            else:
+                p = _resolve_rule_input_path(rs)
+                raw_rules.extend(
+                    load_rules_from_file(
+                        p,
+                        defaults=cfg.defaults,
+                        fields_all=cfg.fields_all,
                     )
-                except Exception:
-                    # ignore bad paths; they will be surfaced via report if needed
-                    pass
+                )
+        except Exception as e:
+            report["invalid_rules"].append({"source": str(rs), "error": str(e)})
 
-        # 2a) Filter out any rules that are not backed by JSON/JSONL.
-        #    TXT-based remove rules (including field_remove_rules.txt and *_remove_rules.txt)
-        #    are owned exclusively by remove_runner.py and must not be processed here.
-        def _is_json_backed_rule(d: Dict[str, Any]) -> bool:
-            src = d.get("__source_file")
-            if not src:
-                # In-memory/adhoc rules are treated as JSON-equivalent
-                return True
-            try:
-                ext = Path(str(src)).suffix.lower()
-            except Exception:
-                # If we can't parse the path, do not block the rule
-                return True
-            return ext in (".json", ".jsonl")
-
-        rules = [r for r in rules if _is_json_backed_rule(r)]
-
-        # 2b) Normalize + defaults per rule, then pre-validate replacements
-        ready: List[Rule] = []
-        invalid_rules: List[Dict[str, Any]] = []
-        for r in rules:
-            # light-touch defaults + normalization
-            r = apply_rule_defaults(r)
-            r = normalize_rule(r)
-            ok, msg = validate_regex_replacement(
-                r.get("pattern", ""),
-                r.get("replacement", ""),
-                r.get("flags", "m"),
+    # Extra selected files (UI filter)
+    for p in selected_files:
+        try:
+            raw_rules.extend(
+                load_rules_from_file(
+                    p,
+                    defaults=cfg.defaults,
+                    fields_all=cfg.fields_all,
+                )
             )
-            if not ok:
-                invalid_rules.append({"rule": r, "error": msg})
-                continue
-            ready.append(_as_rule(r))
+        except Exception as e:
+            report["invalid_rules"].append({"source": str(p), "error": str(e)})
 
-        # Allow explicit remove paths passed into this function to override config.
-        # This ensures remove_runner sees the same effective paths as the UI and
-        # debug-console wrappers (remove_rules, field_remove_rules).
-        if remove_rules is not None:
-            cfg_dict["remove_path"] = str(remove_rules)
-        if field_remove_rules is not None:
-            cfg_dict["field_remove_path"] = str(field_remove_rules)
+    # Filter out non-JSON/JSONL rules (TXT remove rules are owned by remove_runner)
+    ready_dicts: List[Dict[str, Any]] = []
+    for r in raw_rules:
+        src = str(r.get("source_path") or r.get("_source_path") or r.get("source_file") or r.get("_source_file") or "")
+        if src.lower().endswith((".json", ".jsonl")):
+            ready_dicts.append(r)
 
-        # 3) Lazy remove context holder; it will be constructed on first
-        #    run_remove_for_field() call inside the per-note/per-field loop.
-        remove_ctx = None  # created on-demand by remove_runner
+    # Convert to Rule dataclasses
+    ready_rules: List[Rule] = []
+    for d in ready_dicts:
+        try:
+            ready_rules.append(to_rule(d))
+        except Exception as e:
+            report["invalid_rules"].append(
+                {"source": d.get("source_path") or d.get("source_file") or "unknown", "error": str(e)}
+            )
 
-        # 4) Init report and carry invalid rules / dry-run flag
-        report: Dict[str, Any] = _init_report(cfg)
-        if rules_files is not None:
-            report["rules_files_used"] = [str(Path(p)) for p in rules_files]
-        else:
-            report["rules_files_used"] = None
-        report["invalid_rules"] = invalid_rules
-        report["dry_run"] = dry
-        # * Surface extensive-debug settings in the in-memory report for downstream loggers
-        report["extensive_debug"] = extensive_debug
-        report["extensive_debug_max_examples"] = extensive_debug_max_examples
-
-        # --- Remove-only mode: when there are no JSON rules but TXT remove rules exist.
-        # If the UI supplies a dedicated remove-only query, use it.
-        # If the UI selected only *_remove_rules.txt files (remove-only selection), we run a
-        # per-remove-rule query loop (derived from each remove rule pattern), mirroring how
-        # JSON rules build their Browser query.
-        remove_only_query = remove_only_query or cfg_dict.get("remove_only_query")
-        has_remove_cfg = bool(cfg_dict.get("remove_config") or cfg.remove_config)
-        has_explicit_remove = remove_rules is not None or field_remove_rules is not None
-        remove_suffix = cfg_dict.get("remove_rules_suffix") or ""
-        field_remove_name = cfg_dict.get("field_remove_rules_name") or ""
-
-        # Treat the selection as "remove-only" if the chosen files are ONLY:
-        # - one or more *_remove_rules.txt files (by suffix)
-        # - and/or the single field_remove_rules.txt file (by exact name)
-        # This fixes the case where the UI includes the field-remove file alongside
-        # remove-rule files, which previously prevented remove-only mode and caused
-        # "0 notes would change across 0 rules".
-        only_txt_selected = False
-        if rules_files:
-            names = []
-            for p in rules_files:
-                try:
-                    names.append(Path(p).name)
-                except Exception:
-                    names.append(str(p))
-
-            if remove_suffix:
-                allowed = []
-                for nm in names:
-                    if field_remove_name and nm == field_remove_name:
-                        allowed.append(True)
-                    else:
-                        allowed.append(nm.endswith(remove_suffix))
-                only_txt_selected = all(allowed)
-
-        if not ready and (has_remove_cfg or has_explicit_remove or only_txt_selected):
-            if remove_only_query:
-                return _run_remove_only_batch(
-                    mw_ref=mw_ref,
-                    cfg=cfg,
-                    cfg_snapshot=cfg_dict,
-                    report=report,
-                    search_str=str(remove_only_query),
-                    remove_rules=remove_rules,
-                    field_remove_rules=field_remove_rules,
-                    dry=dry,
-                    notes_limit=notes_limit,
-                    selected_files=selected_files,
-                )
-
-            # No global remove-only query supplied; if the selection is remove-only,
-            # mirror JSON-rule behavior by deriving a per-rule Browser query from each
-            # remove TXT rule pattern and scanning only matching notes per remove rule.
-            if only_txt_selected:
-                return _run_remove_rules_only_batch(
-                    mw_ref=mw_ref,
-                    cfg=cfg,
-                    cfg_snapshot=cfg_dict,
-                    report=report,
-                    remove_rules=remove_rules,
-                    field_remove_rules=field_remove_rules,
-                    dry=dry,
-                    notes_limit=notes_limit,
-                    selected_files=selected_files,
-                )
-
-        for idx, rule in enumerate(ready, start=1):
-            per = _init_per_rule(rule, idx)
-            # * Initialize remove loop cap (will be filled after the first remove run)
-            per["remove_max_loops"] = 0
-            # ! Translate $1-style backrefs into Python-compatible replacement once per rule
-            py_repl = _coerce_repl_for_python(rule.replacement, rule.regex)
+    # ? If nothing loaded, surface a deterministic error so the UI doesn't just show
+    # ? "0 notes would change across 0 rules" with no explanation.
+    if not ready_rules:
+        # * Restore legacy behavior: allow remove-only runs even when no JSON rules were loaded.
+        q = str(remove_only_query or "").strip()
+        if cfg.remove_config and q:
             try:
-                search_str = _compose_search(rule)
-                per["search"] = search_str  # ! store actual Browser search text for logging
-                per["search_repr"] = repr(search_str)
-                nids = mw_ref.col.find_notes(search_str)
-                per["notes_matched"] = len(nids)
-                if notes_limit:
-                    nids = nids[:notes_limit]
+                _run_remove_only_batch(
+                    mw_work,
+                    cfg=cfg,
+                    cfg_snapshot=cfg_dict,
+                    report=report,
+                    query=q,
+                    dry=dry,
+                    notes_limit=notes_limit,
+                    remove_rules=remove_rules,
+                )
+            except Exception as e:
+                report["errors"].append(f"Remove-only run failed: {e}")
+                report["error"] = "Remove-only run failed. See report['errors'] for details."
+        else:
+            report["error"] = "No JSON rules loaded. Provide a remove-only query (or select JSON rules) to run. See invalid_rules for path/parse errors."
 
-                for nid in nids:
-                    note = mw_ref.col.get_note(nid)
-                    changed_this_note = False
-                    for field in _resolve_fields(note, rule.fields, cfg.fields_all):
-                        before = note[field]
-                        # 4a/4b) Apply the unified remove pipeline (global remove + field-remove) to this field
-                        working, remove_ctx = run_remove_for_field(
+        _maybe_write_debug_logs(
+            report,
+            cfg,
+            snap=snap,
+            debug_cfg=debug_cfg,
+            regex_debug_cfg=regex_debug_cfg,
+            anki_regex_check=anki_regex_check,
+        )
+        return _finalize(report)
+
+    # -------------------------
+    # 2) Apply rules
+    # -------------------------
+    remove_ctx = None  # remove_runner context is run-wide but built lazily
+
+    for idx, rule in enumerate(ready_rules, start=1):
+        per = _init_per_rule(rule, idx)
+
+        try:
+            # 2a) Compose Browser search (engine-compatible; escape-safe)
+            search_str = compose_search(rule)
+            per["search"] = search_str
+            per["search_repr"] = repr(search_str)
+
+            if not search_str:
+                _append_rule_summary(report, per)
+                continue
+
+            # Optional: allow remove-only run restricted by a user query
+            if remove_only_query:
+                # AND the two queries together (legacy behavior: space => AND)
+                search_str = f"{search_str} {remove_only_query}".strip()
+                per["search"] = search_str
+                per["search_repr"] = repr(search_str)
+
+            # 2b) Find matching notes (treat search parse errors as per-rule errors, not invalid rules)
+            try:
+                nids = mw_work.col.find_notes(search_str)
+            except Exception as e:
+                per["error"] = str(e)
+                _append_rule_summary(report, per)
+                continue
+
+            if notes_limit is not None:
+                try:
+                    nids = nids[: int(notes_limit)]
+                except Exception:
+                    pass
+
+            per["notes_matched"] = len(nids)
+
+            # 2c) Per-note execution
+            for nid in nids:
+                note = mw_work.col.get_note(nid)
+                changed_this_note = False
+
+                target_fields = _resolve_target_fields(note, rule.fields, cfg.fields_all)
+
+                for field in target_fields:
+                    before = note.get(field, "") if hasattr(note, "get") else note[field]
+
+                    # 3) Remove pipeline (unchanged; remove_runner owns its own search/looping)
+                    working = before
+                    if cfg.remove_config:
+                        working_candidate, remove_ctx = run_remove_for_field(
                             text=before,
                             field_name=field,
                             cfg=cfg,
@@ -379,537 +929,101 @@ def run_batch_find_replace(
                             per=per,
                             ctx=remove_ctx,
                             remove_rules=remove_rules,
-                            field_remove_rules=field_remove_rules,
+                            field_remove_rules=None,  # remove_runner reads config-driven suffixes
                             log_dir=cfg.log_dir,
                         )
-                        # After/remove runs: record the configured remove loop cap for logging
-                        if remove_ctx is not None:
+
+                        # Keep remove loop cap in per for logging (best-effort)
+                        try:
                             per["remove_max_loops"] = getattr(remove_ctx, "remove_max_loops", per.get("remove_max_loops", 0))
+                        except Exception:
+                            pass
 
-                        # 4c) Apply main rule (supports pattern list + literal/regex)
-                        patterns: List[str] = rule.pattern if isinstance(rule.pattern, list) else [str(rule.pattern)]
-                        loops_cap = cfg.max_loops if rule.loop else 1
+                        # Apply guards to remove delta only
+                        if working_candidate != before:
+                            if not basic_html_cloze_balance_ok(before, working_candidate):
+                                per["guard_skips"] += 1
+                                working = before
+                            elif _remove_guard_exceeded(cfg, before, working_candidate):
+                                per["guard_skips"] += 1
+                                working = before
+                            else:
+                                working = working_candidate
 
-                        after, total_subs_this_field, passes_used, break_reason = _apply_patterns_loop_safe(
-                            patterns=patterns,
-                            repl=py_repl,
-                            text=working,
-                            is_regex=rule.regex,
-                            flags=rule.flags,
-                            loops_cap=loops_cap,
-                            per=per,
-                        )
-
-                        # ! Track main-rule looping diagnostics (separate from remove_runner)
-                        if passes_used > 1:
-                            per["fr_loop"] = True
-                            per["fr_loops_used"] = per.get("fr_loops_used", 0) + passes_used
-                        br_key = f"fr_break_{break_reason}"
-                        per[br_key] = per.get(br_key, 0) + 1
-
-                        # 4d) Guard against deletions using original before and final after
-                        if _guard_exceeded(rule, before, after):
-                            per["guard_skips"] += 1
-                            continue
-
-                        # 4e) Guard against broken HTML/cloze structure when it was valid before
-                        if not basic_html_cloze_balance_ok(before, after):
-                            per["guard_skips"] += 1
-                            continue
-
-                        if after != before:
-                            changed_this_note = True
-                            per["total_subs"] += total_subs_this_field
-                            # capture up to 2 examples
-                            if len(per["examples"]) < 2:
-                                per["examples"].append({
-                                    "field": field,
-                                    "before": safe_truncate(before, 500, count_spaces=True),
-                                    "after": safe_truncate(after, 500, count_spaces=True),
-                                })
-                            # assign but defer update_note until after all fields processed
-                            if not dry:
-                                note[field] = after
-
-                    if changed_this_note:
-                        # This note WOULD change under this rule
-                        per["notes_would_change"] += 1
-                        # Only count as actually changed and persist when not DRY_RUN
-                        if not dry:
-                            per["notes_changed"] += 1
-                            mw_ref.col.update_note(note)
-
-                _append_rule_summary(report, per)
-
-            except Exception as e:
-                per["error"] = str(e)
-                _append_rule_summary(report, per)
-
-        # 5) Commit once at end
-        if not dry:
-            mw_ref.col.save()
-
-        # 6) Build in-memory summary (no JSON/TXT files written)
-        _write_reports(report, cfg)
-
-        # 7) Optional markdown debug files
-        debug_cfg = dict(config_snapshot.get("batch_fr_debug", {}) or {})
-        debug_enabled = bool(debug_cfg.get("enabled")) or extensive_debug
-
-        if extensive_debug:
-            # * In extensive-debug mode, allow more examples per rule (default 60)
-            debug_cfg.setdefault("max_examples_per_rule", extensive_debug_max_examples)
-
-        if debug_enabled:
-            debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-            if debug_path is not None:
-                report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
-
-            regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-            if regex_debug_path is not None:
-                report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
-
-        # Write dedicated remove debug log once per run when a remove-rule TXT file was selected.
-        if selected_files:
-            # If remove_ctx was never created (e.g., no notes/fields processed), build it so the log can still be written.
-            if remove_ctx is None:
-                try:
-                    remove_ctx = build_remove_context(
-                        cfg=cfg,
-                        cfg_snapshot=cfg_dict,
-                        remove_rules=remove_rules,
-                        field_remove_rules=field_remove_rules,
+                    # 4) Main rule application (new API)
+                    after, meta = apply_rule_to_text(
+                        patterns=rule.pattern,
+                        replacement=rule.replacement,
+                        text=working,
+                        is_regex=rule.regex,
+                        flags=rule.flags,
+                        loop=rule.loop,
+                        loops_cap=int(cfg.max_loops),
                     )
-                except Exception:
-                    remove_ctx = None
 
-            if remove_ctx is not None:
-                _ = maybe_write_remove_debug_for_selection(
-                    remove_ctx,
-                    selected_files=selected_files,
-                    log_dir=cfg.log_dir or cfg_dict.get("log_dir"),
-                )
+                    # Update counters from meta (loop/cap/cycle)
+                    subs = int(meta.get("subs_total", 0) or 0)
+                    per["total_subs"] += subs
 
-        return report
-    finally:
-        # ! Never allow cleanup failures to break a run
-        try:
-            delete_old_anki_log_files(
-                base_dir=cleanup_root,
-                dry_run=False,
-            )
-        except Exception:
-            pass
+                    passes_used = int(meta.get("passes_used", 0) or 0)
+                    if passes_used > 1:
+                        per["fr_loop"] = True
+                        per["fr_loops_used"] += passes_used
 
+                    br = str(meta.get("break_reason") or "")
+                    if br == "stable":
+                        per["fr_break_stable"] += 1
+                    elif br == "cap":
+                        per["fr_break_cap"] += 1
+                    elif br == "cycle":
+                        per["fr_break_cycle"] += 1
 
-def _run_remove_only_batch(
-    *,
-    mw_ref,
-    cfg: RunConfig,
-    cfg_snapshot: Dict[str, Any],
-    report: Dict[str, Any],
-    search_str: str,
-    remove_rules: Optional[Union[str, Path]],
-    field_remove_rules: Optional[Union[str, Path]],
-    dry: bool,
-    notes_limit: Optional[int],
-    selected_files: Optional[Sequence[Any]],
-) -> Dict[str, Any]:
-    """Run a remove-only batch over notes matching ``search_str``.
+                    if bool(meta.get("empty_match_forced_single", False)):
+                        per["fr_empty_match_forced_single"] += 1
 
-    This path is used when there are no JSON-backed FR rules but TXT/field
-    remove rules are configured. It mirrors the per-note/per-field remove
-    pipeline used in the main engine loop, but without any main pattern
-    replacement step.
-    """
-    # Synthetic rule used only for logging and per-rule stats.
-    dummy_rule = Rule(
-        query=search_str,
-        exclude_query=None,
-        pattern="",  # no main FR pattern in remove-only mode
-        replacement="",
-        regex=True,
-        flags="m",
-        fields=["ALL"],
-        loop=True,
-        delete_chars={"max_chars": 0, "count_spaces": True},
-        source_file=None,
-        source_index=None,
-    )
-    per = _init_per_rule(dummy_rule, idx=1)
-    per["search"] = search_str
-    per["search_repr"] = repr(search_str)
+                    # No net change (neither remove nor FR changed anything)
+                    if after == before:
+                        continue
 
-    # --- Remove rule query audit (per line of *_remove_rules.txt)
-    # --- Local helpers: mirror _compose_search() quoting/sanitization
-    def _sanitize_browser_clause(s: str) -> str:
-        """Convert literal newlines/tabs into visible sequences for Anki search."""
-        if not s:
-            return s
-        s = s.replace("\r\n", "\n").replace("\r", "\n")
-        s = s.replace("\n", r"\\n")
-        s = s.replace("\t", r"\\t")
-        return s
+                    # If FR changed the text (working -> after), apply FR guards on that delta only.
+                    final_text = after
+                    if after != working:
+                        # ! Guard: keep cloze/html structurally safe (FR delta)
+                        if not basic_html_cloze_balance_ok(working, after):
+                            per["guard_skips"] += 1
+                            final_text = working
+                        # ! Guard: deletion cap (FR delta)
+                        elif _guard_exceeded(rule, working, after):
+                            per["guard_skips"] += 1
+                            final_text = working
 
-    def _q(s: str) -> str:
-        """Quote Browser clauses consistently (regex clauses always quoted)."""
-        s = (s or "").strip()
-        if not s:
-            return s
-        s = _sanitize_browser_clause(s)
-        if len(s) >= 2 and s[0] == s[-1] == '"':
-            return s
-        if s.lstrip().startswith("re:"):
-            return f'"{s}"'
-        return f'"{s}"' if any(ch.isspace() for ch in s) else s
-    # This does NOT search per rule; it only logs the exact Browser query you could type.
-    try:
-        audit_ctx = build_remove_context(
-            cfg=cfg,
-            cfg_snapshot=cfg_snapshot,
-            remove_rules=remove_rules,
-            field_remove_rules=field_remove_rules,
-        )
-        rrset = getattr(audit_ctx, "remove_ruleset", None)
-        if isinstance(rrset, list):
-            report["remove_rules_loaded"] = len(rrset)
-            audit_rows = []
-            for i, rd in enumerate(rrset, 1):
-                if not isinstance(rd, dict):
-                    continue
+                    # If guards reverted FR, and remove also didn't change, skip.
+                    if final_text == before:
+                        continue
 
-                # Prefer explicit query if present; otherwise derive from pattern like JSON rules.
-                qv = rd.get("query")
-                if isinstance(qv, str) and qv.strip():
-                    clauses = [qv.strip()]
-                    qsrc = "explicit_query"
-                elif isinstance(qv, list) and [str(x).strip() for x in qv if str(x).strip()]:
-                    clauses = [str(x).strip() for x in qv if str(x).strip()]
-                    qsrc = "explicit_query"
-                else:
-                    pat = str(rd.get("pattern") or "").strip()
-                    is_regex = bool(rd.get("regex", True))
-                    base = f"re:{pat}" if is_regex else pat
-                    fields = rd.get("fields") or ["ALL"]
-                    if isinstance(fields, list) and len(fields) == 1 and str(fields[0]).upper() == "ALL":
-                        clauses = [base]
-                    elif isinstance(fields, list) and fields:
-                        clauses = [f"{f}:{base}" for f in fields]
-                    else:
-                        clauses = [base]
-                    qsrc = "derived_from_pattern"
-
-                # Mirror _compose_search joining/quoting behavior
-                search = " ".join(_q(c) for c in clauses if str(c).strip()) or "deck:*"
-                audit_rows.append(
-                    {
-                        "index": i,
-                        "pattern": rd.get("pattern"),
-                        "flags": rd.get("flags"),
-                        "fields": rd.get("fields"),
-                        "query": rd.get("query"),
-                        "exclude_query": rd.get("exclude_query"),
-                        "query_source": qsrc,
-                        "derived_search": search,
-                        "derived_search_repr": repr(search),
-                    }
-                )
-            report["remove_query_audit"] = audit_rows
-    except Exception as _e:
-        report["remove_query_audit_error"] = str(_e)
-
-    remove_ctx = None
-
-    try:
-        nids = mw_ref.col.find_notes(search_str)
-        per["notes_matched"] = len(nids)
-        if notes_limit:
-            nids = nids[:notes_limit]
-
-        for nid in nids:
-            note = mw_ref.col.get_note(nid)
-            changed_this_note = False
-
-            # In remove-only mode, respect cfg.fields_all when present;
-            # otherwise, operate on all fields of the note. If none of the
-            # configured fields exist on this note, fall back to all fields.
-            if cfg.fields_all:
-                fields = [f for f in cfg.fields_all if f in note]
-                if not fields:
-                    fields = list(note.keys())
-            else:
-                fields = list(note.keys())
-
-            for field in fields:
-                before = note[field]
-
-                working, remove_ctx = run_remove_for_field(
-                    text=before,
-                    field_name=field,
-                    cfg=cfg,
-                    cfg_snapshot=cfg_snapshot,
-                    per=per,
-                    ctx=remove_ctx,
-                    remove_rules=remove_rules,
-                    field_remove_rules=field_remove_rules,
-                    log_dir=cfg.log_dir,
-                )
-
-                # After/remove runs: record the configured remove loop cap for logging
-                if remove_ctx is not None:
-                    per["remove_max_loops"] = getattr(remove_ctx, "remove_max_loops", per.get("remove_max_loops", 0))
-
-                if working != before:
                     changed_this_note = True
-                    # We treat remove-only modifications as examples, but leave
-                    # total_subs to be driven by remove_runner's own counters.
-                    if len(per["examples"]) < 2:
-                        per["examples"].append(
-                            {
-                                "field": field,
-                                "before": safe_truncate(before, 500, count_spaces=True),
-                                "after": safe_truncate(working, 500, count_spaces=True),
-                            }
-                        )
 
-                    if not dry:
-                        note[field] = working
-
-            if changed_this_note:
-                per["notes_would_change"] += 1
-                if not dry:
-                    per["notes_changed"] += 1
-                    mw_ref.col.update_note(note)
-
-        _append_rule_summary(report, per)
-
-    except Exception as e:
-        per["error"] = str(e)
-        _append_rule_summary(report, per)
-
-    # Commit once at end for remove-only mode
-    if not dry:
-        mw_ref.col.save()
-
-    # Build in-memory summary and debug logs, mirroring the main path
-    _write_reports(report, cfg)
-
-    debug_cfg = dict(cfg_snapshot.get("batch_fr_debug", {}) or {})
-    extensive_debug = bool(report.get("extensive_debug", False))
-    debug_enabled = bool(debug_cfg.get("enabled")) or extensive_debug
-
-    if extensive_debug:
-        debug_cfg.setdefault(
-            "max_examples_per_rule",
-            int(report.get("extensive_debug_max_examples", 60)),
-        )
-
-    if debug_enabled:
-        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-        if debug_path is not None:
-            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
-
-        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-        if regex_debug_path is not None:
-            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
-
-    # Write dedicated remove debug log once per run when a remove-rule TXT file was selected.
-    if selected_files:
-        if remove_ctx is None:
-            try:
-                remove_ctx = build_remove_context(
-                    cfg=cfg,
-                    cfg_snapshot=cfg_snapshot,
-                    remove_rules=remove_rules,
-                    field_remove_rules=field_remove_rules,
-                )
-            except Exception:
-                remove_ctx = None
-
-        if remove_ctx is not None:
-            _ = maybe_write_remove_debug_for_selection(
-                remove_ctx,
-                selected_files=list(selected_files),
-                log_dir=cfg.log_dir or cfg_snapshot.get("log_dir"),
-            )
-
-    return report
-
-
-# --- New helper: _run_remove_rules_only_batch
-def _run_remove_rules_only_batch(
-    *,
-    mw_ref,
-    cfg: RunConfig,
-    cfg_snapshot: Dict[str, Any],
-    report: Dict[str, Any],
-    remove_rules: Optional[Union[str, Path]],
-    field_remove_rules: Optional[Union[str, Path]],
-    dry: bool,
-    notes_limit: Optional[int],
-    selected_files: Optional[Sequence[Any]],
-) -> Dict[str, Any]:
-    """
-    Run a remove-only batch driven by the selected TXT remove rules.
-
-    This mirrors how JSON rules work:
-    - For each remove rule line (pattern), derive a Browser query (re:pattern ...)
-      using the same quoting logic as _compose_search().
-    - Find candidate notes for that rule.
-    - Apply the unified remove pipeline to matching notes/fields.
-
-    Note: The actual removal is still executed by remove_runner.run_remove_for_field(),
-    which applies the loaded remove ruleset. The per-rule query loop here is primarily
-    to ensure the engine searches candidates the same way JSON rules do (and logs it).
-    """
-    # Build remove context once (loads *_remove_rules.txt and field remove patterns if enabled)
-    try:
-        remove_ctx = build_remove_context(
-            cfg=cfg,
-            cfg_snapshot=cfg_snapshot,
-            remove_rules=remove_rules,
-            field_remove_rules=field_remove_rules,
-        )
-    except Exception as e:
-        # Surface as a single per-rule error in the report
-        dummy_rule = Rule(
-            query="deck:*",
-            exclude_query=None,
-            pattern="",
-            replacement="",
-            regex=True,
-            flags="m",
-            fields=["ALL"],
-            loop=True,
-            delete_chars={"max_chars": 0, "count_spaces": True},
-            source_file=None,
-            source_index=None,
-        )
-        per = _init_per_rule(dummy_rule, idx=1)
-        per["search"] = ""
-        per["error"] = f"build_remove_context failed: {e}"
-        _append_rule_summary(report, per)
-        _write_reports(report, cfg)
-        debug_cfg = dict(cfg_snapshot.get("batch_fr_debug", {}) or {})
-        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-        if debug_path is not None:
-            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
-        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-        if regex_debug_path is not None:
-            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
-        return report
-
-    # If there are no remove rules loaded, log and return (this is the symptom you saw).
-    if not getattr(remove_ctx, "remove_ruleset", None):
-        dummy_rule = Rule(
-            query="deck:*",
-            exclude_query=None,
-            pattern="",
-            replacement="",
-            regex=True,
-            flags="m",
-            fields=["ALL"],
-            loop=True,
-            delete_chars={"max_chars": 0, "count_spaces": True},
-            source_file=None,
-            source_index=None,
-        )
-        per = _init_per_rule(dummy_rule, idx=1)
-        per["search"] = ""
-        per["error"] = "remove_ruleset is empty (0 remove TXT rules loaded)"
-        _append_rule_summary(report, per)
-
-        _write_reports(report, cfg)
-        debug_cfg = dict(cfg_snapshot.get("batch_fr_debug", {}) or {})
-        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-        if debug_path is not None:
-            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
-        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-        if regex_debug_path is not None:
-            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
-        return report
-
-    # Drive a per-remove-rule loop so the search query is derived per line (like JSON rules)
-    # while still using the unified remove pipeline for actual transformations.
-    for idx, rr in enumerate(list(remove_ctx.remove_ruleset), start=1):
-        # Create a synthetic "Rule" object so we can reuse _effective_query/_compose_search
-        # (including the regex quoting behavior you highlighted).
-        try:
-            rr_pat = str((rr or {}).get("pattern", "")).strip()
-        except Exception:
-            rr_pat = ""
-
-        rr_regex = bool((rr or {}).get("regex", True))
-        rr_flags = str((rr or {}).get("flags", "m") or "m")
-        rr_fields = list((rr or {}).get("fields", ["ALL"]) or ["ALL"])
-        rr_query = (rr or {}).get("query", "")
-        rr_ex = (rr or {}).get("exclude_query", None)
-
-        synthetic = Rule(
-            query=rr_query,
-            exclude_query=rr_ex,
-            pattern=rr_pat,
-            replacement="",
-            regex=rr_regex,
-            flags=rr_flags,
-            fields=rr_fields,
-            loop=True,
-            delete_chars={"max_chars": 0, "count_spaces": True},
-            source_file=(rr or {}).get("__source_file"),
-            source_index=(rr or {}).get("__source_index"),
-        )
-
-        per = _init_per_rule(synthetic, idx)
-        per["search"] = _compose_search(synthetic)
-
-        try:
-            nids = mw_ref.col.find_notes(per["search"])
-            per["notes_matched"] = len(nids)
-            if notes_limit:
-                nids = nids[:notes_limit]
-
-            for nid in nids:
-                note = mw_ref.col.get_note(nid)
-                changed_this_note = False
-
-                for field in _resolve_fields(note, synthetic.fields, cfg.fields_all):
-                    before = note[field]
-
-                    working, _ctx = run_remove_for_field(
-                        text=before,
-                        field_name=field,
-                        cfg=cfg,
-                        cfg_snapshot=cfg_snapshot,
-                        per=per,
-                        ctx=remove_ctx,  # keep one context across the run
-                        remove_rules=remove_rules,
-                        field_remove_rules=field_remove_rules,
-                        log_dir=cfg.log_dir,
-                    )
-                    # The remove_runner may return the same ctx; keep reference stable
-                    remove_ctx = _ctx
-
-                    if remove_ctx is not None:
-                        per["remove_max_loops"] = getattr(remove_ctx, "remove_max_loops", per.get("remove_max_loops", 0))
-
-                    if working != before:
-                        changed_this_note = True
-                        if len(per["examples"]) < 2:
-                            per["examples"].append(
+                    # * Capture a small before/after example for logs (cap per rule)
+                    try:
+                        if len(per.get("examples") or []) < MAX_EXAMPLES_PER_RULE:
+                            per.setdefault("examples", []).append(
                                 {
-                                    "field": field,
-                                    "before": safe_truncate(before, 500, count_spaces=True),
-                                    "after": safe_truncate(working, 500, count_spaces=True),
+                                    "field": str(field),
+                                    "before": _preview_snip(before),
+                                    "after": _preview_snip(final_text),
                                 }
                             )
-                        if not dry:
-                            note[field] = working
+                    except Exception:
+                        pass
+
+                    if not dry:
+                        note[field] = final_text
 
                 if changed_this_note:
                     per["notes_would_change"] += 1
                     if not dry:
                         per["notes_changed"] += 1
-                        mw_ref.col.update_note(note)
+                        mw_work.col.update_note(note)
 
             _append_rule_summary(report, per)
 
@@ -917,376 +1031,97 @@ def _run_remove_rules_only_batch(
             per["error"] = str(e)
             _append_rule_summary(report, per)
 
-    if not dry:
-        mw_ref.col.save()
-
-    _write_reports(report, cfg)
-
-    debug_cfg = dict(cfg_snapshot.get("batch_fr_debug", {}) or {})
-    extensive_debug = bool(report.get("extensive_debug", False))
-    debug_enabled = bool(debug_cfg.get("enabled")) or extensive_debug
-
-    if extensive_debug:
-        debug_cfg.setdefault(
-            "max_examples_per_rule",
-            int(report.get("extensive_debug_max_examples", 60)),
-        )
-
-    if debug_enabled:
-        debug_path = write_batch_fr_debug(report, cfg, debug_cfg=debug_cfg)
-        if debug_path is not None:
-            report.setdefault("report_paths", {})["debug_markdown"] = str(debug_path)
-
-        regex_debug_path = write_regex_debug(report, cfg, debug_cfg=debug_cfg)
-        if regex_debug_path is not None:
-            report.setdefault("report_paths", {})["regex_debug_markdown"] = str(regex_debug_path)
-
-    # Write dedicated remove debug log once per run when a remove-rule TXT file was selected.
-    if selected_files and remove_ctx is not None:
-        _ = maybe_write_remove_debug_for_selection(
-            remove_ctx,
-            selected_files=list(selected_files),
-            log_dir=cfg.log_dir or cfg_snapshot.get("log_dir"),
-        )
-
-    return report
-
-# =========================
-# Internals
-# =========================
-def _coerce_run_config(d: Dict[str, Any]) -> RunConfig:
-    """
-    * Coerce a plain dict snapshot into a RunConfig.
-    - Normalizes log_dir so it can safely be a Path or string.
-    """
-    raw_log_dir = d.get("log_dir", "")
-    if isinstance(raw_log_dir, Path):
-        log_dir_val = raw_log_dir
-    else:
-        # * Allow downstream helpers (and config) to use either a raw string
-        # * or a normalized path; empty stays empty.
-        log_dir_val = _norm_path(raw_log_dir) if raw_log_dir else ""
-
-    return RunConfig(
-        ts_format=d.get("ts_format", TS_FORMAT),
-        log_dir=log_dir_val,
-        rules_path=d.get("rules_path", ""),
-        fields_all=list(d.get("fields_all", [])),
-        defaults=dict(d.get("defaults", {})),
-        remove_config=dict(d.get("remove_config", {})),
-        log_mode=d.get("log_mode", "diff"),
-        include_unchanged=bool(d.get("include_unchanged", False)),
-        max_loops=int(d.get("max_loops", 30)),
-        order_preference=dict(d.get("order_preference", {})),
-    )
-
-def _as_rule(r: Dict[str, Any]) -> Rule:
-    return Rule(
-        query=r.get("query", ""),
-        exclude_query=r.get("exclude_query"),
-        pattern=r.get("pattern", ""),
-        replacement=r.get("replacement", ""),
-        regex=bool(r.get("regex", True)),
-        flags=r.get("flags", "m"),
-        fields=list(r.get("fields", ["ALL"])),
-        loop=bool(r.get("loop", False)),
-        delete_chars=dict(r.get("delete_chars", {"max_chars": 0, "count_spaces": True})),
-        source_file=r.get("__source_file"),
-        source_index=r.get("__source_index"),
-    )
-
-def _compose_search(rule: Rule) -> str:
-    """
-    * Build Browser search text from rule.query/exclude_query.
-    - String or list[str] (AND-join); excludes prefixed with -("...")
-    - Quote clauses that contain whitespace.
-    """
-    def _sanitize_browser_clause(s: str) -> str:
-        """\
-        Convert literal control characters into visible two-character sequences
-        so Anki's search parser doesn't get a multi-line query.
-
-        - Converts literal newlines/tabs to \\n / \\t
-        - Leaves existing backslashes alone (so patterns containing \\n remain \\n)
-        """
-        if not s:
-            return s
-        s = s.replace("\r\n", "\n").replace("\r", "\n")
-        s = s.replace("\n", r"\\n")
-        s = s.replace("\t", r"\\t")
-        return s
-
-    def _q(s: str) -> str:
-        """\
-        Normalize a single search clause for the Browser.
-
-        - Always quote regex-based clauses (re:...), even if they have no spaces.
-        - Quote other clauses only when they contain whitespace.
-        - Avoid double-quoting if the clause is already wrapped in quotes.
-        - Ensure the clause does not contain literal newlines/tabs.
-        """
-        s = (s or "").strip()
-        if not s:
-            return s
-        s = _sanitize_browser_clause(s)
-        if len(s) >= 2 and s[0] == s[-1] == '"':
-            return s
-        if s.lstrip().startswith("re:"):
-            return f'"{s}"'
-        return f'"{s}"' if any(ch.isspace() for ch in s) else s
-
-    parts: List[str] = []
-
-    # Use effective query (explicit query or derived from pattern)
-    eff_q = _effective_query(rule)
-    if isinstance(eff_q, list):
-        parts.extend([_q(s) for s in eff_q if str(s).strip()])
-    elif isinstance(eff_q, str) and eff_q.strip():
-        parts.append(_q(eff_q))
-
-    ex = rule.exclude_query
-    if isinstance(ex, list):
-        parts.extend([f'-({_q(s)})' for s in ex if str(s).strip()])
-    elif isinstance(ex, str) and ex.strip():
-        parts.append(f'-({_q(ex)})')
-
-    # If we somehow still have nothing, fall back to deck:*
-    return " ".join(parts) if parts else "deck:*"
-
-def _resolve_fields(note, fields_spec: List[str], fields_all: List[str]) -> List[str]:
-    wanted = fields_all if (fields_spec == ["ALL"] and fields_all) else (list(note.keys()) if fields_spec == ["ALL"] else fields_spec)
-    model_fields = set(note.keys())
-    return [f for f in wanted if f in model_fields]
-
-def _pattern_of(rule: Rule) -> str:
-    return rule.pattern[0] if isinstance(rule.pattern, list) else str(rule.pattern)
-
-# --- Insert: _effective_query helper
-def _effective_query(rule: Rule) -> Union[str, List[str], None]:
-    q = rule.query
-
-    # 1) Explicit query wins
-    if isinstance(q, str):
-        qs = q.strip()
-        if qs:
-            return qs
-    elif isinstance(q, list):
-        cleaned = [str(s).strip() for s in q if str(s).strip()]
-        if cleaned:
-            return cleaned
-
-    # 2) No explicit query → derive from pattern
-    pat = _pattern_of(rule).strip()
-    if not pat:
-        return None
-
-    base_clause = f"re:{pat}" if rule.regex else pat
-
-    # 3) Respect fields when present
-    fields = rule.fields or ["ALL"]
-    # Global rule: keep old behavior for ["ALL"]
-    if len(fields) == 1 and str(fields[0]).upper() == "ALL":
-        return base_clause
-
-    # Field-scoped rule: one clause per field
-    return [f"{field}:{base_clause}" for field in fields]
-
-def _coerce_repl_for_python(raw: str, is_regex: bool) -> str:
-    if not is_regex or not raw:
-        return raw
-
-    s = raw
-    # Use a placeholder for literal $$ to avoid treating them as group backrefs.
-    placeholder = "\uFFFF"
-    s = s.replace("$$", placeholder)
-
-    # Convert $1, $2, ... into \g<1>, \g<2>, ... for Python's re.sub semantics.
-    def _num_backref(m: re.Match) -> str:
-        return r"\g<%s>" % m.group(1)
-
-    s = re.sub(r"\$(\d+)", _num_backref, s)
-
-    # Restore literal dollars
-    s = s.replace(placeholder, "$")
-    return s
-
-def _guard_exceeded(rule: Rule, before: str, after: str) -> bool:
-    limit = int(rule.delete_chars.get("max_chars", 0))
-    count_spaces = bool(rule.delete_chars.get("count_spaces", True))
-    exceeded, _deleted = deletion_exceeds_limit(before, after, limit, count_spaces=count_spaces)
-    return exceeded
-
-def _init_report(cfg: RunConfig) -> Dict[str, Any]:
-    return {
-        "ts_format": cfg.ts_format,
-        # * Store log_dir as a string in the report for stable markdown rendering
-        "log_dir": str(cfg.log_dir),
-        # * Extensive-debug settings (may be overridden later from config_snapshot)
-        "extensive_debug": getattr(cfg, "extensive_debug", False),
-        "extensive_debug_max_examples": getattr(cfg, "extensive_debug_max_examples", 60),
-        "rules": 0,
-        "notes_touched": 0,        # notes matched by rules
-        "notes_changed": 0,        # actual commits
-        "notes_would_change": 0,   # simulated changes (esp. DRY_RUN)
-        "guard_skips": 0,
-        "per_rule": [],
-        "report_paths": {},
-    }
-
-def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
-    raw_src = getattr(rule, "source_file", None) or ""
+    # ! Auto-trigger remove-only if a remove TXT file was selected but JSON rules matched no notes.
+    #   This prevents "candidates exist" (from remove audit) but "applied_subs = 0" when no JSON rule matched.
     try:
-        file_name = Path(str(raw_src)).name if raw_src else ""
-    except Exception:
-        file_name = str(raw_src) if raw_src else ""
-    return {
-        "index": idx,
-        # * Short name for backward-compatible displays
-        "file": file_name,
-        # * Full source path preserved for group-aware logging
-        "source_file": str(raw_src) if raw_src else "",
-        "source_index": getattr(rule, "source_index", None),
-        "query": _effective_query(rule),
-        "exclude": rule.exclude_query,
-        "pattern": rule.pattern if isinstance(rule.pattern, str) else rule.pattern[:1],
-        "flags": rule.flags,
-        "fields": rule.fields,
-        "loop": rule.loop,
-        # --- remove-loop logging additions:
-        "remove_loop": False,              # any remove rule actually looped?
-        "remove_max_loops": 0,             # configured cap for remove rules
-        "remove_loops_used": 0,            # legacy/back-compat: SUM of passes (same as remove_loops_used_sum)
-        "remove_loops_used_sum": 0,        # total passes used by remove rules (SUM)
-        "remove_loops_used_max": 0,        # worst-case passes used in a single field application (MAX)
-        "remove_fields_looped": 0,         # number of field applications that required >1 pass
-        "remove_cap_hits": 0,              # number of times remove loop stopped due to cap
-        "remove_cycle_hits": 0,            # number of times remove loop stopped due to cycle
-        "remove_empty_match_forced_single": 0,  # number of times empty-match forced single-pass
-        # --- main-rule (JSON) loop logging additions:
-        "fr_loop": False,              # any main rule pass actually looped?
-        "fr_loops_used": 0,            # total passes used by main rules
-        "replacement": rule.replacement,
-        "notes_matched": 0,
-        "notes_changed": 0,         # actual commits
-        "notes_would_change": 0,    # simulated changes
-        "total_subs": 0,
-        "guard_skips": 0,
-        "remove_field_subs": 0,
-        "examples": [],
-        "search": "",   # ! actual Browser search string (set in run loop)
-        "search_repr": "",  # ! repr(search) to reveal hidden characters
-        "error": "",    # ! runtime error string, if any
-    }
+        remove_txt_selected = remove_rules is not None
+        notes_matched_total = int(report.get("notes_matched", 0) or 0)
 
-
-def _append_rule_summary(report: Dict[str, Any], per: Dict[str, Any]) -> None:
-    report["per_rule"].append(per)
-    report["rules"] = len(report["per_rule"])
-    report["notes_touched"] += per.get("notes_matched", 0)
-    report["notes_changed"] += per.get("notes_changed", 0)
-    report["notes_would_change"] += per.get("notes_would_change", 0)
-    report["guard_skips"] += per.get("guard_skips", 0)
-
-
-def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
-    # Prefer the config-provided ts_format, fall back to module default if missing
-    ts_fmt = cfg.ts_format or TS_FORMAT
-    ts = datetime.now().strftime(ts_fmt)
-    dry = bool(report.get("dry_run", False))
-
-    # Human-readable summary (kept in-memory only)
-    lines: List[str] = []
-    lines.append(f"Batch Find & Replace — {ts}")
-    lines.append(f"Rules: {report.get('rules', 0)}")
-    lines.append(f"Notes matched: {report.get('notes_touched', 0)}")
-    if dry:
-        lines.append(f"Notes that would change: {report.get('notes_would_change', 0)}")
-        lines.append(f"Notes actually changed (DRY RUN): {report.get('notes_changed', 0)}")
-    else:
-        lines.append(f"Notes changed: {report.get('notes_changed', 0)}")
-    lines.append(f"Guard skips: {report.get('guard_skips', 0)}")
-    lines.append("")
-    for per in report.get("per_rule", []):
-        lines.append(f"- Rule {per.get('index')}: fields={per.get('fields')} flags={per.get('flags')} loop={per.get('loop')}")
-        lines.append(f"  query={per.get('query')} exclude={per.get('exclude')}")
-        if per.get("search"):
-            lines.append(f"  search={per.get('search')}")
-        if per.get("error"):
-            lines.append(f"  error={per.get('error')}")
-        matched = per.get("notes_matched", 0)
-        would_change = per.get("notes_would_change", 0)
-        changed = per.get("notes_changed", 0)
-        subs = per.get("total_subs", 0)
-        guard_skips = per.get("guard_skips", 0)
-        rm_field_subs = per.get("remove_field_subs", 0)
-        # --- Fetch remove-loop metrics for summary
-        rm_loop = per.get("remove_loop", False)
-        rm_max_loops = per.get("remove_max_loops", 0)
-        rm_loops_sum = per.get("remove_loops_used_sum", per.get("remove_loops_used", 0))
-        rm_loops_max = per.get("remove_loops_used_max", 0)
-        rm_fields_looped = per.get("remove_fields_looped", 0)
-        rm_cap_hits = per.get("remove_cap_hits", 0)
-        rm_cycle_hits = per.get("remove_cycle_hits", 0)
-        rm_empty_forced = per.get("remove_empty_match_forced_single", 0)
-
-        # --- Fetch main-rule loop metrics for summary
-        fr_loop = per.get("fr_loop", False)
-        fr_loops_used = per.get("fr_loops_used", 0)
-        fr_empty_forced = per.get("fr_empty_match_forced_single", 0)
-        fr_break_stable = per.get("fr_break_stable", 0)
-        fr_break_cap = per.get("fr_break_cap", 0)
-        fr_break_cycle = per.get("fr_break_cycle", 0)
-
-        if dry:
-            lines.append(
-                f"  matched={matched} "
-                f"would_change={would_change} "
-                f"subs={subs} "
-                f"guard_skips={guard_skips} "
-                f"rm_field_subs={rm_field_subs} "
-                f"rm_loop={rm_loop} "
-                f"rm_loops_sum={rm_loops_sum} "
-                f"rm_loops_max={rm_loops_max} "
-                f"rm_fields_looped={rm_fields_looped} "
-                f"rm_cap_hits={rm_cap_hits} "
-                f"rm_cycle_hits={rm_cycle_hits} "
-                f"rm_empty_forced={rm_empty_forced} "
-                f"rm_max_loops={rm_max_loops} "
-                f"fr_loop={fr_loop} "
-                f"fr_loops_used={fr_loops_used} "
-                f"fr_break_stable={fr_break_stable} "
-                f"fr_break_cap={fr_break_cap} "
-                f"fr_break_cycle={fr_break_cycle} "
-                f"fr_empty_forced={fr_empty_forced}"
+        if remove_txt_selected and bool(cfg.remove_config) and notes_matched_total == 0:
+            q = str(remove_only_query or "").strip()
+            # If no explicit query was provided, an empty Anki search string matches all notes.
+            # This is intentional: user selected a remove file and expects remove to run.
+            remove_ctx = _run_remove_only_batch(
+                mw_work,
+                cfg=cfg,
+                cfg_snapshot=cfg_dict,
+                report=report,
+                query=q,
+                dry=dry,
+                notes_limit=notes_limit,
+                remove_rules=remove_rules,
             )
-        else:
-            lines.append(
-                f"  matched={matched} "
-                f"changed={changed} "
-                f"subs={subs} "
-                f"guard_skips={guard_skips} "
-                f"rm_field_subs={rm_field_subs} "
-                f"rm_loop={rm_loop} "
-                f"rm_loops_sum={rm_loops_sum} "
-                f"rm_loops_max={rm_loops_max} "
-                f"rm_fields_looped={rm_fields_looped} "
-                f"rm_cap_hits={rm_cap_hits} "
-                f"rm_cycle_hits={rm_cycle_hits} "
-                f"rm_empty_forced={rm_empty_forced} "
-                f"rm_max_loops={rm_max_loops} "
-                f"fr_loop={fr_loop} "
-                f"fr_loops_used={fr_loops_used} "
-                f"fr_break_stable={fr_break_stable} "
-                f"fr_break_cap={fr_break_cap} "
-                f"fr_break_cycle={fr_break_cycle} "
-                f"fr_empty_forced={fr_empty_forced}"
-            )
-        ex = per.get("examples", [])
-        for i, e in enumerate(ex, 1):
-            lines.append(f"  ex{i} [{e.get('field','?')}]: BEFORE: {e.get('before','')}")
-            lines.append(f"  ex{i} [{e.get('field','?')}]: AFTER : {e.get('after','')}")
-        lines.append("")
+            report.setdefault("remove_only_auto", {})
+            report["remove_only_auto"]["triggered"] = True
+            report["remove_only_auto"]["query"] = q
+    except Exception as e:
+        report.setdefault("remove_only_auto", {})
+        report["remove_only_auto"]["error"] = f"{type(e).__name__}: {e}"
 
-    # Store the text summary in the report (no files written here)
-    details_txt = "\n".join(lines)
-    report["details_txt"] = details_txt
+    # -------------------------
+    # 3) Optional debug output
+    # -------------------------
+    # ! If a remove-rule TXT was selected, write a dedicated Remove_FR debug log once per run.
+    try:
+        # If a remove-rule TXT was selected but the remove pipeline never ran (e.g., 0 notes matched),
+        # remove_ctx will still be None. Build it anyway so we can write Remove_FR_Debug for auditing.
+        if remove_ctx is None and remove_rules is not None:
+            remove_ctx = build_remove_context(
+                cfg=cfg,
+                cfg_snapshot=cfg_dict,
+                remove_rules=remove_rules,
+                field_remove_rules=None,
+            )
+
+        if remove_ctx is not None:
+            selected_for_remove_debug: List[Any] = []
+
+            # Include UI-selected files (original input list) for detection.
+            try:
+                selected_for_remove_debug.extend(report.get("rules_files_in") or [])
+            except Exception:
+                pass
+
+            # Ensure the active remove_rules path is included.
+            if remove_rules is not None:
+                selected_for_remove_debug.append(str(remove_rules))
+
+            # ! Force-write a dedicated remove log whenever a remove-rule TXT was selected.
+            #   This avoids silent skips due to selection-trigger logic.
+            remove_md = None
+            try:
+                if remove_rules is not None:
+                    # Ensure consistent path handling with the other logs.
+                    remove_md = write_remove_debug_md(remove_ctx, Path(str(cfg.log_dir)).expanduser())
+                else:
+                    # Fallback: keep the previous selection-trigger behavior.
+                    remove_md = maybe_write_remove_debug_for_selection(
+                        remove_ctx,
+                        selected_files=selected_for_remove_debug,
+                        log_dir=Path(str(cfg.log_dir)).expanduser(),
+                    )
+            except Exception as e:
+                report["remove_log_error"] = f"{type(e).__name__}: {e}"
+
+            # Record outcome for debugging
+            report.setdefault("remove_debug", {})
+            report["remove_debug"]["attempted"] = True
+            report["remove_debug"]["remove_rules"] = str(remove_rules) if remove_rules is not None else ""
+            report["remove_debug"]["log_dir"] = str(Path(str(cfg.log_dir)).expanduser())
+            report["remove_debug"]["written"] = bool(remove_md)
+
+            if remove_md:
+                report.setdefault("report_paths", {})["remove_markdown"] = str(remove_md)
+    except Exception as e:
+        report["remove_log_error"] = str(e)
+
+    _maybe_write_debug_logs(
+        report,
+        cfg,
+        snap=snap,
+        debug_cfg=debug_cfg,
+        regex_debug_cfg=regex_debug_cfg,
+        anki_regex_check=anki_regex_check,
+    )
+
+    return _finalize(report)
