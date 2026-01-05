@@ -1,0 +1,256 @@
+digraph batch_FR_call_graph {
+  graph [
+    rankdir=LR,
+    splines=true,
+    compound=true,
+    fontname="Helvetica",
+    fontsize=20,
+    labelloc="t",
+    label="batch_FR • call graph (UI → Engine → Utils → Logs)"
+  ];
+
+  node  [shape=box, fontname="Helvetica", fontsize=10];
+  edge  [fontname="Helvetica", fontsize=9];
+
+  // ----------------------------
+  // Entry layer
+  // ----------------------------
+  subgraph cluster_entry {
+    label="Entry";
+    color="#C9D2E3";
+
+    entry_run_toolbar [label="batch_FR/__init__.py\nrun_from_toolbar()"];
+    entry_wrapper     [label="batch_FR/__init__.py\nrun_batch_find_replace() wrapper"];
+  }
+
+  // ----------------------------
+  // UI layer (HTML dialog)
+  // ----------------------------
+  subgraph cluster_ui {
+    label="UI (HTML dialog + bridge)";
+    color="#CFE8D5";
+
+    ui_prompt   [label="gui/ui_dialog.py\nprompt_batch_fr_run_options()"];
+    ui_dialog   [label="gui/ui_dialog.py\nBatchFRHtmlDialog.__init__()"];
+    ui_bridge   [label="gui/ui_dialog.py\nBatchFRHtmlDialog._on_bridge_cmd()"];
+    ui_submit   [label="gui/ui_dialog.py\nBatchFRHtmlDialog._handle_submit()"];
+    ui_preview  [label="gui/ui_dialog.py\nBatchFRHtmlDialog._handle_preview()"];
+    ui_fav      [label="gui/ui_dialog.py\nBatchFRHtmlDialog._handle_toggle_favorite()"];
+    ui_defaults [label="gui/ui_dialog.py\nBatchFRHtmlDialog._handle_save_default_selection()"];
+
+    js_boot     [label="gui/rules_bootstrap.js\nboot + init hooks", shape=component];
+    js_core     [label="gui/rules_core.js\nselection model + sendToPython()", shape=component];
+    js_dialog   [label="gui/rules_dialog.js\nUI actions + event handlers", shape=component];
+    html_panel  [label="gui/rules_panel.html\nDOM + placeholders", shape=component];
+  }
+
+  // ----------------------------
+  // UI helpers / persistence
+  // ----------------------------
+  subgraph cluster_ui_helpers {
+    label="UI helpers + persistence";
+    color="#E7E0C9";
+
+    dh_html    [label="gui/dialog_helper.py\nbuild_rules_panel_html()"];
+    dh_ctx     [label="gui/dialog_helper.py\nbuild_initial_context()"];
+    dh_preview [label="gui/dialog_helper.py\nbuild_rule_file_preview()"];
+
+    th_cfg     [label="utils/top_helper.py\nload_batch_fr_config()"];
+    th_root    [label="utils/top_helper.py\n_get_rules_root()"];
+    th_disc    [label="utils/top_helper.py\n_discover_rule_files()"];
+    th_fav_rd  [label="utils/top_helper.py\n_load_rule_favorites()"];
+    th_fav_wr  [label="utils/top_helper.py\n_save_rule_favorites()"];
+    th_alias   [label="utils/top_helper.py\n_load_rule_aliases()"];
+  }
+
+  // ----------------------------
+  // Engine layer
+  // ----------------------------
+  subgraph cluster_engine {
+    label="Engine";
+    color="#F0D0D0";
+
+    eng_run     [label="utils/engine.py\nrun_batch_find_replace()"];
+    eng_expand  [label="utils/engine.py\n_expand_ruleset_inputs()"];
+    eng_fields  [label="utils/engine.py\n_resolve_target_fields()"];
+    eng_report  [label="utils/engine.py\n_init_report() / per-rule init"];
+    eng_logs    [label="utils/engine.py\n_maybe_write_debug_logs()"];
+    eng_remove  [label="utils/engine.py\n_run_remove_only_batch()"];
+    eng_norm    [label="utils/engine.py\n_normalize_config_snapshot()"];
+  }
+
+  // ----------------------------
+  // Rule IO
+  // ----------------------------
+  subgraph cluster_rules {
+    label="Rule IO / Normalization";
+    color="#D9D3F0";
+
+    rio_root   [label="utils/rules_io.py\nresolve_rules_root()"];
+    rio_disc   [label="utils/rules_io.py\ndiscover_rule_files()"];
+    rio_cfg    [label="utils/rules_io.py\nload_rules_from_config()"];
+    rio_file   [label="utils/rules_io.py\nload_rules_from_file()"];
+    rio_merge  [label="utils/rules_io.py\nmerge_defaults() / normalize_rule()"];
+    rio_rule   [label="utils/rules_io.py\nto_rule()  -> Rule"];
+    rio_dedupe [label="utils/rules_io.py\ndedupe_rules()"];
+  }
+
+  // ----------------------------
+  // Query + transforms
+  // ----------------------------
+  subgraph cluster_transform {
+    label="Query + Text/Regex transforms";
+    color="#CFE1F5";
+
+    aq_eff   [label="utils/anki_query_utils.py\neffective_query()"];
+    aq_comp  [label="utils/anki_query_utils.py\ncompose_search()"];
+    re_apply [label="utils/regex_utils.py\napply_rule_to_text()"];
+    re_comp  [label="utils/regex_utils.py\ncompile_pattern()"];
+    re_guard [label="utils/regex_utils.py\ndeletion_exceeds_limit()\n+ basic_html_cloze_balance_ok()"];
+    txt_help [label="utils/text_utils.py\nnormalize / truncate helpers"];
+    glob_ts  [label="utils/FR_global_utils.py\nnow_stamp()"];
+  }
+
+  // ----------------------------
+  // Remove pipeline
+  // ----------------------------
+  subgraph cluster_remove {
+    label="Remove pipeline (TXT remove rules)";
+    color="#F5E7CF";
+
+    rm_is     [label="utils/remove_runner.py\nis_remove_rule_filename()"];
+    rm_ctx    [label="utils/remove_runner.py\nbuild_remove_context()"];
+    rm_field  [label="utils/remove_runner.py\nrun_remove_for_field()"];
+    rm_apply  [label="utils/remove_runner.py\napply_remove_pipeline_to_field()"];
+    rm_dbgsel [label="utils/remove_runner.py\nmaybe_write_remove_debug_for_selection()"];
+    rm_dbgmd  [label="utils/remove_runner.py\nwrite_remove_debug_md()"];
+  }
+
+  // ----------------------------
+  // Logging + retention
+  // ----------------------------
+  subgraph cluster_logs {
+    label="Logging + retention";
+    color="#E2E2E2";
+
+    log_main [label="utils/logger.py\nwrite_batch_fr_debug()"];
+    log_re   [label="utils/logger.py\nwrite_regex_debug()"];
+    log_per  [label="utils/logger.py\n_write_per_file_debug_logs()"];
+    clean    [label="modules/log_cleanup.py\ndelete_old_anki_log_files()"];
+  }
+
+  // ----------------------------
+  // Config layer
+  // ----------------------------
+  subgraph cluster_config {
+    label="Config";
+    color="#DDEBD7";
+
+    cfg_get  [label="utils/config_utils.py\nget_batch_fr_config()"];
+    cfg_norm [label="utils/config_utils.py\nnormalize_modules_snapshot()"];
+    cfg_mod  [label="modules/modules_config.json", shape=note];
+    cfg_ui   [label="batch_FR/json/ui_settings.json", shape=note];
+    cfg_fav  [label="batch_FR/json/rule_favorites.json", shape=note];
+    cfg_alias[label="batch_FR/json/rule_aliases.json", shape=note];
+  }
+
+  // ----------------------------
+  // Edges: Entry → UI → Engine
+  // ----------------------------
+  entry_run_toolbar -> th_cfg   [label="load config"];
+  entry_run_toolbar -> th_root  [label="rules root"];
+  entry_run_toolbar -> th_disc  [label="discover rule files"];
+  entry_run_toolbar -> ui_prompt[label="open HTML picker"];
+  entry_run_toolbar -> eng_run  [label="run (selected files)"];
+
+  entry_wrapper -> eng_run      [label="delegates to engine"];
+
+  // UI composition + context
+  ui_prompt -> ui_dialog        [label="new dialog"];
+  ui_dialog -> dh_html          [label="build HTML"];
+  ui_dialog -> dh_ctx           [label="initial context"];
+
+  // JS bundle included in HTML
+  dh_html -> html_panel;
+  dh_html -> js_boot;
+  dh_html -> js_core;
+  dh_html -> js_dialog;
+
+  // Bridge commands
+  js_core   -> ui_bridge        [label="pycmd batchFr:*"];
+  js_dialog -> ui_bridge        [label="pycmd batchFr:*"];
+
+  ui_bridge -> ui_submit        [label="command: submit"];
+  ui_bridge -> ui_preview       [label="command: preview"];
+  ui_bridge -> ui_fav           [label="command: toggle_favorite"];
+  ui_bridge -> ui_defaults      [label="command: save_default_selection"];
+
+  ui_preview -> dh_preview      [label="render preview text"];
+  ui_fav     -> th_fav_wr       [label="persist favorites"];
+  ui_fav     -> cfg_fav;
+  ui_defaults-> cfg_ui          [label="persist defaults"];
+
+  // UI context uses aliases/favorites
+  dh_ctx   -> th_alias          [label="load aliases"];
+  dh_ctx   -> th_fav_rd         [label="load favorites"];
+  th_alias -> cfg_alias;
+  th_fav_rd-> cfg_fav;
+
+  // ----------------------------
+  // Engine → Config/Retention
+  // ----------------------------
+  eng_run  -> cfg_get   [label="resolve run config"];
+  cfg_get  -> cfg_mod;
+  cfg_get  -> cfg_norm;
+  cfg_norm -> cfg_mod;
+
+  eng_run  -> clean     [label="optional cleanup"];
+  eng_run  -> glob_ts   [label="stamp for logs/report"];
+
+  // ----------------------------
+  // Engine → Rule IO
+  // ----------------------------
+  eng_run   -> eng_expand [label="expand selected inputs"];
+  eng_run   -> rio_cfg    [label="load from config (if used)"];
+  eng_run   -> rio_file   [label="load from files"];
+  rio_cfg   -> rio_root;
+  rio_file  -> rio_merge;
+  rio_merge -> rio_rule;
+  rio_rule  -> rio_dedupe;
+
+  // ----------------------------
+  // Engine → Remove routing
+  // ----------------------------
+  eng_run   -> rm_is      [label="detect TXT remove file"];
+  eng_run   -> rm_dbgsel  [label="selection-trigger debug"];
+  eng_run   -> eng_remove [label="remove-only mode"];
+  eng_remove-> rm_ctx     [label="build context"];
+  eng_remove-> rm_field   [label="apply remove to notes"];
+  rm_field  -> rm_apply;
+  eng_remove-> rm_dbgmd   [label="write remove debug md"];
+
+  // ----------------------------
+  // Engine → Search + Apply loop
+  // ----------------------------
+  eng_run  -> eng_fields [label="choose fields"];
+  eng_run  -> aq_eff     [label="effective query"];
+  aq_eff   -> aq_comp    [label="compose_search"];
+  eng_run  -> eng_report [label="init report / per-rule stats"];
+
+  eng_run  -> re_comp    [label="compile patterns"];
+  eng_run  -> re_apply   [label="apply substitutions"];
+  re_apply -> re_guard   [label="guards"];
+  re_apply -> txt_help   [label="truncate/normalize"];
+
+  // Remove stage inside per-note loop (when enabled)
+  eng_run  -> rm_field   [label="optional remove stage"];
+
+  // ----------------------------
+  // Engine → Logs
+  // ----------------------------
+  eng_run  -> eng_logs   [label="write debug logs"];
+  eng_logs -> log_main   [label="batch summary"];
+  eng_logs -> log_re     [label="regex details"];
+  log_main -> log_per    [label="per-file logs"];
+  log_re   -> log_per    [label="per-file logs"];
+}

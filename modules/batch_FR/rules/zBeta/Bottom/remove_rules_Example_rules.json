@@ -22,17 +22,6 @@
     ]
 },
 {
-    "query": "re:&nbsp;",
-    "pattern":"&nbsp;",
-    "replacement": "",
-    "regex": "true",
-    "loop": "True",
-    "fields": [
-    "Text", "Extra", "Extra2", "Extra3", "Extra4", "Extra5",
-    "Extra6", "Extra7", "Front", "Back", "Display", "Button"
-    ]
-},
-{
     "query": "re:<(b|i|u|(?:span))></(b|i|u|(?:span))>",
     "pattern":"<(b|i|u|(?:span))></(b|i|u|(?:span))>",
     "replacement": "",

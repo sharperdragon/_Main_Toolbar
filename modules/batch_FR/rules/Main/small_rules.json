@@ -18,5 +18,19 @@
     "All"
     ],
     "delete_chars": {"max_chars": 0, "count_spaces": true}
+},
+{
+  "pattern": "\\s+((<div>)|(<br>))",
+  "replacement": "$1",
+  "regex": true,
+  "loop": false,
+  "fields": ["All"],
+  "delete_chars": { "max_chars": 0, "count_spaces": true }
+},
+{
+  "pattern": "(\\}\\}) and (\\{\\{c\\d)",
+  "replacement": "$1 & $2",
+  "regex": true,
+  "loop": true
 }
 ]

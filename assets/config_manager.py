@@ -1,3 +1,6 @@
+# pyright: reportMissingImports=false
+# mypy: disable_error_code=import
+
 from aqt import mw
 
 class ConfigManager:

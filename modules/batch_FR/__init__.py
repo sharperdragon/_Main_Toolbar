@@ -1,7 +1,7 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import List, Union, Optional, Dict, Any
 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 try:  # pragma: no cover
     from aqt import mw  # type: ignore
@@ -10,7 +10,9 @@ except Exception:  # pragma: no cover
 
 
 try:
-    from .utils.engine import run_batch_find_replace as _impl_run_batch_find_replace  # type: ignore
+    from .utils.engine import (
+        run_batch_find_replace as _impl_run_batch_find_replace,  # type: ignore
+    )
 except Exception as _e:  # pragma: no cover
     _impl_run_batch_find_replace = None  # type: ignore
     _IMPORT_ERROR = _e
@@ -18,19 +20,21 @@ else:
     _IMPORT_ERROR = None
 
 
-from .utils.top_helper import (
-    now_stamp,
-    load_batch_fr_config,
-    _get_rules_root,
-    _discover_rule_files,
-)
 from .gui.ui_dialog import prompt_batch_fr_run_options as _prompt_batch_fr_run_options
+from .utils.top_helper import (
+    _discover_rule_files,
+    _get_rules_root,
+    load_batch_fr_config,
+    now_stamp,
+)
+
 
 # -----------------------------
 # Public API wrapper (engine)
 # ------------------------------
 def run_batch_find_replace(
-    mw_ref, *,
+    mw_ref,
+    *,
     rulesets: List[Union[str, Path, Dict[str, Any]]],
     remove_rules: Optional[Union[str, Path]] = None,
     field_remove_rules: Optional[Union[str, Path]] = None,
@@ -66,12 +70,13 @@ def run_batch_find_replace(
         mw_ref,
         rulesets=rulesets,
         remove_rules=remove_rules,
-        config_snapshot=cfg,   # pass normalized config
+        config_snapshot=cfg,  # pass normalized config
         dry_run=dry_run,
         show_progress=show_progress,
         notes_limit=notes_limit,
         rules_files=rules_files,
     )
+
 
 # ------------------------------
 # Toolbar entrypoint
@@ -83,7 +88,9 @@ def run_from_toolbar() -> None:
     """
     if mw is None:  # pragma: no cover
         # ! Calling from outside Anki – safe no-op with guidance
-        raise RuntimeError("run_from_toolbar() must be called from within Anki (aqt.mw unavailable).")
+        raise RuntimeError(
+            "run_from_toolbar() must be called from within Anki (aqt.mw unavailable)."
+        )
 
     cfg = load_batch_fr_config(None)
     debug_cfg = cfg.get("batch_fr_debug", {}) or {}
@@ -94,7 +101,11 @@ def run_from_toolbar() -> None:
     if not rule_files:
         try:
             from aqt.utils import tooltip  # type: ignore
-            tooltip("Batch F&R: no rule files found under 'rules_path' in modules_config.json.", period=5000)
+
+            tooltip(
+                "Batch F&R: no rule files found under 'rules_path' in modules_config.json.",
+                period=5000,
+            )
         except Exception:
             pass
         return
@@ -105,6 +116,7 @@ def run_from_toolbar() -> None:
         # User cancelled
         try:
             from aqt.utils import tooltip  # type: ignore
+
             tooltip(f"Batch F&R cancelled • {now_stamp()}", period=3000)
         except Exception:
             pass
@@ -124,12 +136,15 @@ def run_from_toolbar() -> None:
     except Exception:
         selected_remove_txt = []
 
-    remove_rules_sel: Optional[Path] = selected_remove_txt[0] if selected_remove_txt else None
+    remove_rules_sel: Optional[Path] = (
+        selected_remove_txt[0] if selected_remove_txt else None
+    )
 
     # ! If multiple remove TXT files were selected, we will use the first one.
     if selected_remove_txt and len(selected_remove_txt) > 1:
         try:
             from aqt.utils import tooltip  # type: ignore
+
             tooltip(
                 f"Batch F&R: multiple remove-rule TXT files selected; using: {remove_rules_sel.name}",
                 period=6000,
@@ -141,7 +156,11 @@ def run_from_toolbar() -> None:
         # Defensive: nothing selected, treat as cancelled.
         try:
             from aqt.utils import tooltip  # type: ignore
-            tooltip(f"Batch F&R cancelled (no rule files selected) • {now_stamp()}", period=3000)
+
+            tooltip(
+                f"Batch F&R cancelled (no rule files selected) • {now_stamp()}",
+                period=3000,
+            )
         except Exception:
             pass
         return
@@ -170,19 +189,30 @@ def run_from_toolbar() -> None:
         crash_path = None
 
         try:
-            log_dir = Path(str(cfg.get("log_dir", "~/Desktop/anki_logs/Main_toolbar"))).expanduser()
+            log_dir = Path(
+                str(cfg.get("log_dir", "~/Desktop/anki_logs/Main_toolbar"))
+            ).expanduser()
             log_dir.mkdir(parents=True, exist_ok=True)
             crash_path = log_dir / f"Batch_FR_Crash__{now_stamp()}.txt"
             crash_path.write_text(
-                "\n".join([
-                    "Batch_FR toolbar run crashed.",
-                    f"dry_run={dry_run}",
-                    f"extensive_debug={extensive_debug}",
-                    f"selected_files_count={len(selected_files)}",
-                    "selected_files (first 20):",
-                    *[f"  - {str(p)}" for p in (selected_files[:20] if isinstance(selected_files, list) else [])],
-                    "\nTRACEBACK:\n" + tb,
-                ]),
+                "\n".join(
+                    [
+                        "Batch_FR toolbar run crashed.",
+                        f"dry_run={dry_run}",
+                        f"extensive_debug={extensive_debug}",
+                        f"selected_files_count={len(selected_files)}",
+                        "selected_files (first 20):",
+                        *[
+                            f"  - {str(p)}"
+                            for p in (
+                                selected_files[:20]
+                                if isinstance(selected_files, list)
+                                else []
+                            )
+                        ],
+                        "\nTRACEBACK:\n" + tb,
+                    ]
+                ),
                 encoding="utf-8",
             )
         except Exception:
@@ -201,10 +231,17 @@ def run_from_toolbar() -> None:
 
         try:
             from aqt.utils import tooltip  # type: ignore
+
             if crash_path:
-                tooltip(f"Batch F&R failed • crash log written: {crash_path.name}", period=8000)
+                tooltip(
+                    f"Batch F&R failed • crash log written: {crash_path.name}",
+                    period=8000,
+                )
             else:
-                tooltip("Batch F&R failed • crash log could not be written (see console)", period=8000)
+                tooltip(
+                    "Batch F&R failed • crash log could not be written (see console)",
+                    period=8000,
+                )
         except Exception:
             pass
 
@@ -255,10 +292,14 @@ def run_from_toolbar() -> None:
                 # Example: "dry run: 2 notes would change (4 hits) across 1 rule (guard skips: 1)"
                 parts = [
                     "Batch F&R dry run:",
-                    f"{note_count} note" + ("" if note_count == 1 else "s") + " would change",
+                    f"{note_count} note"
+                    + ("" if note_count == 1 else "s")
+                    + " would change",
                 ]
                 if isinstance(note_hits, int):
-                    parts.append(f"({note_hits} hit" + ("" if note_hits == 1 else "s") + ")")
+                    parts.append(
+                        f"({note_hits} hit" + ("" if note_hits == 1 else "s") + ")"
+                    )
                 parts.append(f"across {rules} rule" + ("" if rules == 1 else "s"))
                 if guard_skips:
                     parts.append(f"(guard skips: {guard_skips})")
@@ -314,9 +355,11 @@ def run_from_toolbar() -> None:
         # Best-effort only; never let this break the main run.
         pass
 
+
 # 01-46_12-06 – expose batch_FR dialogs for tools like AnkiWebView Inspector
 try:
     import types  # type: ignore[import-not-found]
+
     import aqt  # type: ignore[import-not-found]
 
     from .gui import ui_dialog as _batch_fr_ui_dialog

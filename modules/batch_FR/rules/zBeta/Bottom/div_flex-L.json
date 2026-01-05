@@ -1,6 +1,6 @@
 [
 {
-    "query": "-Text:re:class=\"flex-L\"",
+    "query": "",
     "exclude_query": [
     "re:class=\"flex-L\"",
     "re:((</div><div>)|(<br>))\\+((</div><div>)|(<br>))"

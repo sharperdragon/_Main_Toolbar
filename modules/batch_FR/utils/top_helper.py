@@ -1,25 +1,28 @@
 from __future__ import annotations
 
-# * Standard library
-from pathlib import Path
-from datetime import datetime
-from typing import List, Optional, Dict, Any, TypedDict, Set
 import json
 import os
+from datetime import datetime
+
+# * Standard library
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 from .data_defs import BatchFRConfig
-
 from .FR_global_utils import (
-    TS_FORMAT,
     DESKTOP_PATH,
-    MODULES_CONFIG_PATH, 
-    now_stamp, 
+    MODULES_CONFIG_PATH,
+    RULES_PATH,
+    TS_FORMAT,
     _coerce_int,
     _norm_path,
-    RULES_PATH,
+    now_stamp,
 )
 
-def load_modules_config_snapshot(config_path: Path | str | None = None) -> Dict[str, Any]:
+
+def load_modules_config_snapshot(
+    config_path: Path | str | None = None,
+) -> Dict[str, Any]:
     """Load the full modules_config.json as a dict.
 
     UI code should pass this full snapshot to the engine so `global_config` (log_dir/ts_format)
@@ -56,11 +59,7 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
         data = {}
 
     g = data.get("global_config", {}) or {}
-    b = (
-        data.get("batch_FR_config")
-        or data.get("batch_fr_config")
-        or {}
-    )
+    b = data.get("batch_FR_config") or data.get("batch_fr_config") or {}
     if not isinstance(g, dict):
         g = {}
     if not isinstance(b, dict):
@@ -77,7 +76,9 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
 
     if norm_log_dir is None:
         # Default to a stable Desktop subfolder for this module
-        log_dir_path = (DESKTOP_PATH / "anki_logs" / "Main_toolbar").expanduser().resolve()
+        log_dir_path = (
+            (DESKTOP_PATH / "anki_logs" / "Main_toolbar").expanduser().resolve()
+        )
     else:
         # Use the normalized path from config
         log_dir_path = Path(norm_log_dir).expanduser().resolve()
@@ -120,7 +121,6 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
         batch_debug_cfg = {}
     anki_regex_check_val = b.get("anki_regex_check", True)
 
-
     # Remove settings: propagate to top-level snapshot for engine/remove_runner
     remove_rules_suffix = (
         b.get("remove_rules_suffix")
@@ -141,7 +141,10 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
         "rules_path": str(
             rules_path
             if rules_path
-            else (Path(MODULES_CONFIG_PATH).expanduser().resolve().parent / str(RULES_PATH)).resolve()
+            else (
+                Path(MODULES_CONFIG_PATH).expanduser().resolve().parent
+                / str(RULES_PATH)
+            ).resolve()
         ),
         "fields_all": list(fields_all) if isinstance(fields_all, list) else [],
         "defaults": dict(defaults) if isinstance(defaults, dict) else {},
@@ -156,6 +159,7 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
         "anki_regex_check": bool(anki_regex_check_val),
     }
     return snapshot
+
 
 # --------------------------------------
 # Helper: Get rules root directory
@@ -212,6 +216,7 @@ def _discover_rule_files(cfg: BatchFRConfig) -> List[Path]:
         return out
     except Exception:
         return []
+
 
 # ------------------------------
 # Rule alias helpers
@@ -321,9 +326,11 @@ def _load_rule_aliases(rule_files: List[Path]) -> Dict[str, str]:
 
     return flat_aliases
 
+
 # ------------------------------
 # Rule favorites helpers
 # ------------------------------
+
 
 def _get_favorites_file_path() -> Path:
     """
@@ -342,7 +349,6 @@ def _save_rule_favorites(favorites: Set[str]) -> None:
         json.dumps(sorted(favorites), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-
 
 
 def _load_rule_favorites(rule_files: List[Path]) -> Set[str]:
@@ -400,7 +406,6 @@ def _rule_group_and_name(raw_src: Any, rules_root: Path | None) -> tuple[str, st
         pass
 
     return "", file_name, file_name
-
 
 
 def _pretty_rule_file_label(path: Path, aliases: Dict[str, str] | None = None) -> str:

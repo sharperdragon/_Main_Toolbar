@@ -6,8 +6,7 @@
         "regex": true,
         "loop": false,
         "delete_chars":{
-            "max_chars": -1,
-            "include_spaces": true
+            "max_chars": -1, "include_spaces": true
         }
     }
 ]

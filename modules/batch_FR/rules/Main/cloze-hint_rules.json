@@ -21,14 +21,19 @@
   "delete_chars": {"max_chars": 1, "count_spaces": true }
 },
 {
-    "pattern":"(\\{\\{c\\d)::((Increased)|(Decreased)|(Increases)|(Decreases)|(increased)|(decreased)|(increases)|(decreases))",
-    "replacement": "$1::<i>$2</i>",
-    "regex": true,
-    "fields": [
-    "Text"
-    ],
+  "pattern":"(\\{\\{c\\d)::((Increased)|(Decreased)|(Increases)|(Decreases)|(increased)|(decreased)|(increases)|(decreases))",
+  "replacement": "$1::<i>$2</i>",
+  "regex": true,
+  "fields": ["Text"],
   "delete_chars": {"max_chars": 0, "count_spaces": true }
-  },
+},
+{
+  "pattern":"(\\{\\{c\\d)::((Increased)|(Decreased)|(Increases)|(Decreases)|(increased)|(decreased)|(increases)|(decreases))",
+  "replacement": "$1::<i>$2</i>",
+  "regex": true,
+  "fields": ["Text"],
+  "delete_chars": { "max_chars": 0, "count_spaces": true}
+},
 {
     "pattern":"(\\{\\{c\\d::[^\\:\\}]+?)::([^\\}]+?)\\sor\\s([^\\}]+?\\}\\})",
     "replacement": "$1::$2 \\/ $3",

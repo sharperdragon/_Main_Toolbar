@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+# mypy: disable_error_code=import
 
 import os
 import re

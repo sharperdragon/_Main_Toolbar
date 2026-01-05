@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
-import re
 import json
 
 # * Anki import guarded for import/test safety
@@ -364,6 +363,20 @@ def _init_per_rule(rule: Rule, idx: int) -> Dict[str, Any]:
 
 def _append_rule_summary(report: Dict[str, Any], per: Dict[str, Any]) -> None:
     report["rules"] += 1
+
+    # * Engine-side compatibility aliases for older UI/JS renderers
+    #   Some UI tables expect shorter keys like `would_change` instead of `notes_would_change`.
+    try:
+        per.setdefault("matched", int(per.get("notes_matched", 0) or 0))
+        per.setdefault("would_change", int(per.get("notes_would_change", 0) or 0))
+        per.setdefault("changed", int(per.get("notes_changed", 0) or 0))
+        per.setdefault("subs", int(per.get("total_subs", 0) or 0))
+
+        # Remove pipeline convenience aliases (optional)
+        per.setdefault("rm_subs", int(per.get("remove_field_subs", 0) or 0))
+        per.setdefault("rm_loops", int(per.get("remove_loops_used_sum", 0) or 0))
+    except Exception:
+        pass
     inc = int(per.get("notes_matched", 0) or 0)
     report["notes_touched"] += inc
     report["notes_matched"] += inc  # alias
@@ -372,7 +385,6 @@ def _append_rule_summary(report: Dict[str, Any], per: Dict[str, Any]) -> None:
     report["total_subs"] += int(per.get("total_subs", 0) or 0)
     report["guard_skips"] += int(per.get("guard_skips", 0) or 0)
     report["per_rule"].append(per)
-
 
 def _run_remove_only_batch(
     mw_work: Any,
