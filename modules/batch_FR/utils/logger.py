@@ -1,24 +1,17 @@
 import re
 import sys
-import json
-import csv
-from html import unescape
-from pathlib import Path
-from datetime import datetime
-import time
-from typing import Optional, Iterable, List, Dict, Any, Tuple
 from collections import defaultdict
-
-from .FR_global_utils import now_stamp, md_inline, md_table_cell, TS_FORMAT
-
-from .data_defs import RunConfig, Rule
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from .anki_query_utils import compose_search, effective_query
+from .data_defs import Rule, RunConfig
+from .FR_global_utils import TS_FORMAT, md_inline, md_table_cell
 from .rules_io import to_rule
 
-
-
 # --- Rule provenance helper (for logs/reports) -------------------------------
+
 
 def rule_prov(rule: Any) -> str:
     """Small provenance string used in logs.
@@ -48,7 +41,7 @@ def rule_prov(rule: Any) -> str:
 
     # Dataclass Rule
     if isinstance(rule, Rule):
-        src = (str(rule.source_file).strip() if rule.source_file else "?")
+        src = str(rule.source_file).strip() if rule.source_file else "?"
         idx = rule.source_index
         # Rule currently doesn't have a `name` field
         nm = ""
@@ -64,7 +57,12 @@ def rule_prov(rule: Any) -> str:
                 or "?"
             )
         except Exception:
-            src = str(rule.get("source_file") or rule.get("_source_file") or rule.get("__source_file") or "?")
+            src = str(
+                rule.get("source_file")
+                or rule.get("_source_file")
+                or rule.get("__source_file")
+                or "?"
+            )
 
         idx = rule.get("source_index")
         if idx is None:
@@ -90,6 +88,7 @@ def rule_prov(rule: Any) -> str:
 
 
 # --- Helper: coerce dict/Rule into a Rule dataclass --------------------------
+
 
 def _as_rule(rule_like: Any) -> Rule:
     """Return a Rule dataclass for downstream helpers.
@@ -147,7 +146,11 @@ def _resolve_source_info(raw: Any) -> Tuple[str, str]:
 
         # If a Rule dataclass was passed, use its provenance.
         if isinstance(raw, Rule):
-            sf = str(raw.source_file).strip() if getattr(raw, "source_file", None) else ""
+            sf = (
+                str(raw.source_file).strip()
+                if getattr(raw, "source_file", None)
+                else ""
+            )
             sp = getattr(raw, "source_path", None)
 
             if sp:
@@ -200,7 +203,9 @@ def _pick_rule_source(per: Dict[str, Any]) -> Tuple[str, str]:
 
 
 # --- Helper: group-aware label for rule file sources ---
-def _log_rule_group_and_name(raw_src: Any, rules_root: Optional[Path]) -> Tuple[str, str, str]:
+def _log_rule_group_and_name(
+    raw_src: Any, rules_root: Optional[Path]
+) -> Tuple[str, str, str]:
     """Return (group, file_name, display_label) for a rule source.
 
     - group: first folder under rules_root, or "" if not applicable
@@ -244,6 +249,127 @@ def _log_rule_group_and_name(raw_src: Any, rules_root: Optional[Path]) -> Tuple[
     return "", file_name, file_name
 
 
+# --- Helper: render TXT remove-rule file reporting (selected/used + stats) ---
+
+
+def _append_remove_reporting(
+    lines: List[str],
+    report: Dict[str, Any],
+    rules_root: Optional[Path],
+    *,
+    heading: str = "Remove rules (TXT)",
+    hide_field_remove: bool = False,
+) -> None:
+    """Append TXT remove-rule reporting to a markdown log.
+
+    This is driven by report keys (added by engine/remove_runner patches):
+      - remove_files_selected: list[str|Path]
+      - remove_files_used: list[str|Path]
+      - remove_stats_by_file: dict[path_or_label -> stats dict]
+
+    If these keys are missing/empty, this function is a no-op.
+    """
+    try:
+        rm_sel = list(report.get("remove_files_selected") or [])
+        rm_used = list(report.get("remove_files_used") or [])
+        rm_stats = report.get("remove_stats_by_file") or {}
+
+        def _is_field_remove(x: Any) -> bool:
+            """True if x refers to field_remove_rules.txt (or an equivalent label)."""
+            try:
+                name = Path(str(x)).name.lower()
+            except Exception:
+                name = str(x).lower()
+
+            if name == "field_remove_rules.txt":
+                return True
+
+            # Sometimes stats keys may be labels rather than paths.
+            if "field_remove" in name and "rules" in name:
+                return True
+
+            return False
+
+        # Optionally hide field_remove_rules from Batch_FR_Debug output.
+        if hide_field_remove:
+            rm_sel = [x for x in rm_sel if not _is_field_remove(x)]
+            rm_used = [x for x in rm_used if not _is_field_remove(x)]
+            if isinstance(rm_stats, dict) and rm_stats:
+                rm_stats = {
+                    k: v for k, v in rm_stats.items() if not _is_field_remove(k)
+                }
+
+        if not rm_sel and not rm_used and not rm_stats:
+            return
+
+        lines.append(f"## {heading}")
+
+        # Selected (UI / inputs)
+        if rm_sel:
+            lines.append(f"- remove_files_selected ({len(rm_sel)}):")
+
+            def _rm_sort_key(p: Any) -> str:
+                try:
+                    return Path(str(p)).name.lower()
+                except Exception:
+                    return str(p).lower()
+
+            for p in sorted(rm_sel, key=_rm_sort_key):
+                _, _, label = _log_rule_group_and_name(p, rules_root)
+                lines.append(f"  - `{label}`")
+        else:
+            lines.append("- remove_files_selected: (none)")
+
+        # Used (effective / resolved)
+        if rm_used:
+            lines.append(f"- remove_files_used ({len(rm_used)}):")
+
+            def _rm_sort_key2(p: Any) -> str:
+                try:
+                    return Path(str(p)).name.lower()
+                except Exception:
+                    return str(p).lower()
+
+            for p in sorted(rm_used, key=_rm_sort_key2):
+                _, _, label = _log_rule_group_and_name(p, rules_root)
+                lines.append(f"  - `{label}`")
+        else:
+            lines.append("- remove_files_used: (none)")
+
+        # Per-file summary table (optional)
+        if isinstance(rm_stats, dict) and rm_stats:
+            lines.append("")
+            lines.append("### Remove summary by file")
+            lines.append("")
+            lines.append("| file | rules | matched | would_change | changed | subs |")
+            lines.append("|---|---:|---:|---:|---:|---:|")
+
+            def _stats_int(v: Any) -> int:
+                try:
+                    return int(v or 0)
+                except Exception:
+                    return 0
+
+            # Sort by filename for stable output
+            for raw_key in sorted(rm_stats.keys(), key=lambda x: str(x).lower()):
+                st = rm_stats.get(raw_key) or {}
+                _, _, label = _log_rule_group_and_name(raw_key, rules_root)
+                rules_n = _stats_int(st.get("rules"))
+                matched_n = _stats_int(st.get("notes_matched"))
+                would_n = _stats_int(st.get("notes_would_change"))
+                changed_n = _stats_int(st.get("notes_changed"))
+                subs_n = _stats_int(st.get("total_subs"))
+                lines.append(
+                    f"| `{label}` | {rules_n} | {matched_n} | {would_n} | {changed_n} | {subs_n} |"
+                )
+
+        lines.append("")
+
+    except Exception:
+        # Logging helper must never break the main log.
+        return
+
+
 # --- Remove TXT rule helpers: detect, resolve fields, build previews ---
 def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     """Decide if this per-rule record came from a TXT-based remove file.
@@ -251,6 +377,15 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     This is used so we can render field-aware query/search previews instead of
     treating remove TXT rules like normal JSON rules in logs.
     """
+    """
+    Decide if this per-rule record came from a TXT-based remove file.
+    This is used so we can render field-aware query/search previews instead of
+    treating remove TXT rules like normal JSON rules in logs.
+    """
+    # Engine-generated per-field deletions from field_remove_rules.txt should be treated as normal rules in logs.
+    if bool(per.get("generated_field_remove")):
+        return False
+
     # Try several possible locations for the originating rule file
     candidates: list[Any] = [
         per.get("source_path"),
@@ -284,8 +419,8 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     if not src_name:
         return False
 
-    # Heuristic: TXT remove-rule files end with these exact suffixes
-    if src_name.endswith("_remove_rule.txt") or src_name.endswith("_remove_rules.txt"):
+    # Heuristic: TXT remove-rule files end with these suffixes (engine routes ANY name that ends with these)
+    if src_name.endswith("remove_rule.txt") or src_name.endswith("remove_rules.txt"):
         return True
 
     # Respect configured names/suffixes when present
@@ -302,8 +437,6 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
         return True
 
     return False
-
-
 
 
 def _highlight_diff_snippet(
@@ -502,7 +635,9 @@ def write_batch_fr_debug(
 
     try:
         # Resolve timestamp format and log directory
-        ts_fmt = getattr(cfg, "ts_format", None) or report.get("ts_format") or "%H-%M_%m-%d"
+        ts_fmt = (
+            getattr(cfg, "ts_format", None) or report.get("ts_format") or "%H-%M_%m-%d"
+        )
         ts = datetime.now().strftime(ts_fmt)
 
         # Normalize / resolve log_dir; cfg.log_dir may already be a Path
@@ -526,7 +661,9 @@ def write_batch_fr_debug(
         # Header
         lines.append(f"# Batch Find & Replace Debug — {ts}")
         lines.append("")
-        lines.append("Generated by batch_FR engine. This file summarizes rule behavior for this run.")
+        lines.append(
+            "Generated by batch_FR engine. This file summarizes rule behavior for this run."
+        )
         lines.append("")
 
         # Settings section
@@ -536,7 +673,9 @@ def write_batch_fr_debug(
         lines.append(f"- log_dir: `{log_dir_str}`")
         extensive = bool(report.get("extensive_debug", False))
         try:
-            extensive_max = int(report.get("extensive_debug_max_examples", max_examples))
+            extensive_max = int(
+                report.get("extensive_debug_max_examples", max_examples)
+            )
         except Exception:
             extensive_max = max_examples
         lines.append(f"- extensive_debug: {extensive}")
@@ -562,9 +701,7 @@ def write_batch_fr_debug(
 
         # Raw UI selection inputs (if present)
         rules_files_selected = (
-            report.get("rules_files_selected")
-            or report.get("rules_files_in")
-            or []
+            report.get("rules_files_selected") or report.get("rules_files_in") or []
         )
 
         # Show the raw selection first (helps diagnose UI vs expansion issues)
@@ -601,7 +738,9 @@ def write_batch_fr_debug(
         lines.append(f"- max_loops: {getattr(cfg, 'max_loops', 0)}")
 
         remove_cfg = getattr(cfg, "remove_config", {}) or {}
-        lines.append(f"- remove_config.loop (JSON rules/UI): {bool(remove_cfg.get('loop', True))}")
+        lines.append(
+            f"- remove_config.loop (JSON rules/UI): {bool(remove_cfg.get('loop', True))}"
+        )
         lines.append(
             f"- remove_config.max_loops: {remove_cfg.get('max_loops', getattr(cfg, 'max_loops', 0))}"
         )
@@ -615,10 +754,14 @@ def write_batch_fr_debug(
         else:
             fr_fields_disp = str(fr_fields or "None")
         lines.append(f"- remove_config.field_remove_fields: {fr_fields_disp}")
-        # TXT-based remove-rule files: a dedicated Remove_FR_Debug is written when such a file is selected.
+        # TXT-based remove-rule files are reported separately from JSON rules.
+        # If engine/remove_runner populated remove_* report keys, we include them here.
+        _append_remove_reporting(lines, report, rules_root, hide_field_remove=True)
+
+        # A dedicated Remove_FR_Debug may also be written (if enabled) for detailed per-field examples.
         lines.append(
-            "- remove_rules_logging: a dedicated `Remove_FR_Debug__*.md` is written when the selected rule files "
-            "include a TXT remove-rule file ending with `_remove_rule.txt` or `_remove_rules.txt`."
+            "- remove_rules_logging: a dedicated `Remove_FR_Debug__*.md` may be written for TXT remove rules "
+            "(depending on debug settings)."
         )
         lines.append("")
 
@@ -628,8 +771,12 @@ def write_batch_fr_debug(
         lines.append(f"- Invalid rules: {len(invalid_rules)}")
         lines.append(f"- Notes matched: {report.get('notes_touched', 0)}")
         if dry:
-            lines.append(f"- Notes that would change: {report.get('notes_would_change', 0)}")
-            lines.append(f"- Notes actually changed (DRY RUN): {report.get('notes_changed', 0)}")
+            lines.append(
+                f"- Notes that would change: {report.get('notes_would_change', 0)}"
+            )
+            lines.append(
+                f"- Notes actually changed (DRY RUN): {report.get('notes_changed', 0)}"
+            )
         else:
             lines.append(f"- Notes changed: {report.get('notes_changed', 0)}")
         lines.append(f"- Guard skips: {report.get('guard_skips', 0)}")
@@ -650,7 +797,14 @@ def write_batch_fr_debug(
                 pat = str(rule.get("pattern", ""))
                 rep = str(rule.get("replacement", ""))
 
-                raw_src = rule.get("source_path") or rule.get("_source_path") or rule.get("__source_file") or rule.get("source_file") or rule.get("_source_file") or ""
+                raw_src = (
+                    rule.get("source_path")
+                    or rule.get("_source_path")
+                    or rule.get("__source_file")
+                    or rule.get("source_file")
+                    or rule.get("_source_file")
+                    or ""
+                )
                 _, fname, label = _log_rule_group_and_name(raw_src, rules_root)
                 if not label:
                     label = "<?>"
@@ -658,7 +812,9 @@ def write_batch_fr_debug(
                 err_disp = _format_error_html(err, escape_pipes=True)
                 pat_disp = md_table_cell(pat)
                 rep_disp = md_table_cell(rep)
-                lines.append(f"| {idx} | `{label}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |")
+                lines.append(
+                    f"| {idx} | `{label}` | {err_disp or ''} | `{pat_disp}` | `{rep_disp}` |"
+                )
         lines.append("")
 
         # Per-rule details table
@@ -683,10 +839,16 @@ def write_batch_fr_debug(
                 lines.append(f"### {label}")
                 lines.append("")
                 if dry:
-                    lines.append("| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_sum | rm_loops_max | rm_fields_looped | rm_cap_hits | rm_cycle_hits | rm_empty_forced | rm_max_loops | fr_loop | fr_loops_used | fr_break_stable | fr_break_cap | fr_break_cycle | fr_empty_forced |")
+                    lines.append(
+                        "| # | fields | flags | loop | matched | would_change | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_sum | rm_loops_max | rm_fields_looped | rm_cap_hits | rm_cycle_hits | rm_empty_forced | rm_max_loops | fr_loop | fr_loops_used | fr_break_stable | fr_break_cap | fr_break_cycle | fr_empty_forced |"
+                    )
                 else:
-                    lines.append("| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_sum | rm_loops_max | rm_fields_looped | rm_cap_hits | rm_cycle_hits | rm_empty_forced | rm_max_loops | fr_loop | fr_loops_used | fr_break_stable | fr_break_cap | fr_break_cycle | fr_empty_forced |")
-                lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|")
+                    lines.append(
+                        "| # | fields | flags | loop | matched | changed | subs | guard_skips | rm_field_subs | rm_loop | rm_loops_sum | rm_loops_max | rm_fields_looped | rm_cap_hits | rm_cycle_hits | rm_empty_forced | rm_max_loops | fr_loop | fr_loops_used | fr_break_stable | fr_break_cap | fr_break_cycle | fr_empty_forced |"
+                    )
+                lines.append(
+                    "|---:|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|"
+                )
 
                 for per in rules_for_file:
                     idx = per.get("index", "?")
@@ -701,7 +863,9 @@ def write_batch_fr_debug(
                     guard_skips = per.get("guard_skips", 0)
                     rm_field_subs = per.get("remove_field_subs", 0)
                     rm_loop = per.get("remove_loop", False)
-                    rm_loops_sum = per.get("remove_loops_used_sum", per.get("remove_loops_used", 0))
+                    rm_loops_sum = per.get(
+                        "remove_loops_used_sum", per.get("remove_loops_used", 0)
+                    )
                     rm_loops_max = per.get("remove_loops_used_max", 0)
                     rm_fields_looped = per.get("remove_fields_looped", 0)
                     rm_cap_hits = per.get("remove_cap_hits", 0)
@@ -771,7 +935,7 @@ def write_batch_fr_debug(
                 lines.append(f"- pattern: `{md_inline(pattern)}`")
                 lines.append(
                     "- details: see `Remove_FR_Debug__*.md` for per-field remove behavior and examples "
-                    "(written when a selected rule file ends with `_remove_rule(s).txt`)."
+                    "(written when a selected rule file ends with `remove_rule(s).txt`)."
                 )
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))
@@ -785,12 +949,18 @@ def write_batch_fr_debug(
                 lines.append("")
                 lines.append(f"- query: `{md_inline(per.get('query', ''))}`")
                 if per.get("query_input") is not None:
-                    lines.append(f"- query_input: `{md_inline(per.get('query_input', ''))}`")
+                    lines.append(
+                        f"- query_input: `{md_inline(per.get('query_input', ''))}`"
+                    )
                 lines.append(f"- exclude: `{md_inline(per.get('exclude', ''))}`")
                 if per.get("exclude_input") is not None:
-                    lines.append(f"- exclude_input: `{md_inline(per.get('exclude_input', ''))}`")
+                    lines.append(
+                        f"- exclude_input: `{md_inline(per.get('exclude_input', ''))}`"
+                    )
                 if has_search:
-                    lines.append(f"- search (Browser): `{md_inline(per.get('search', ''))}`")
+                    lines.append(
+                        f"- search (Browser): `{md_inline(per.get('search', ''))}`"
+                    )
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))
                     lines.append(f"- error: {err_html}")
@@ -823,7 +993,9 @@ def write_batch_fr_debug(
         extensive = bool(report.get("extensive_debug", False))
         if extensive:
             try:
-                max_per_file = int(report.get("extensive_debug_max_examples", max_examples))
+                max_per_file = int(
+                    report.get("extensive_debug_max_examples", max_examples)
+                )
             except Exception:
                 max_per_file = max_examples
             if max_per_file > 0:
@@ -862,7 +1034,9 @@ def write_regex_debug(
 
     try:
         # Resolve timestamp format and log directory
-        ts_fmt = getattr(cfg, "ts_format", None) or report.get("ts_format") or "%H-%M_%m-%d"
+        ts_fmt = (
+            getattr(cfg, "ts_format", None) or report.get("ts_format") or "%H-%M_%m-%d"
+        )
         ts = datetime.now().strftime(ts_fmt)
 
         # Normalize / resolve log_dir; cfg.log_dir may already be a Path
@@ -907,8 +1081,19 @@ def write_regex_debug(
             if _is_regex_rule(rule):
                 regex_invalids.append(item)
 
-        if not regex_rules and not regex_invalids:
-            # Nothing regex-specific to report
+        # If there are no regex-like rules, we still emit this file when remove-rule
+        # reporting exists. This prevents confusion where remove rules changed notes
+        # but Regex_Debug appears empty/missing.
+        has_remove_reporting = bool(
+            (
+                report.get("remove_files_used")
+                or report.get("remove_files_selected")
+                or report.get("remove_stats_by_file")
+            )
+        )
+
+        if not regex_rules and not regex_invalids and not has_remove_reporting:
+            # Nothing regex-specific (and no remove info) to report
             return None
 
         lines: List[str] = []
@@ -916,7 +1101,9 @@ def write_regex_debug(
         # Header
         lines.append(f"# Regex Debug — {ts}")
         lines.append("")
-        lines.append("Generated by batch_FR engine. This file focuses on regex rules and errors.")
+        lines.append(
+            "Generated by batch_FR engine. This file focuses on regex rules and errors."
+        )
         lines.append("")
 
         # Sources / settings
@@ -930,9 +1117,7 @@ def write_regex_debug(
         )
 
         rule_files_selected = (
-            report.get("rules_files_selected")
-            or report.get("rules_files_in")
-            or []
+            report.get("rules_files_selected") or report.get("rules_files_in") or []
         )
         if rule_files_selected:
             lines.append(f"- Rule files selected: {len(rule_files_selected)}")
@@ -945,6 +1130,7 @@ def write_regex_debug(
 
         lines.append(f"- Rule files used: {len(rule_files_used)}")
         if rule_files_used:
+
             def _rule_file_sort_key(p: Any) -> str:
                 try:
                     return Path(str(p)).name.lower()
@@ -958,6 +1144,9 @@ def write_regex_debug(
                 lines.append(f"    - `{label}`")
         lines.append("")
 
+        # TXT remove-rule reporting (if present)
+        _append_remove_reporting(lines, report, rules_root)
+
         dry = report.get("dry_run", False)
         lines.append("## Settings")
         lines.append(f"- DRY_RUN (this run): {dry}")
@@ -967,7 +1156,9 @@ def write_regex_debug(
 
         # Summary
         total_regex = len(regex_rules) + len(regex_invalids)
-        compile_errors = sum(1 for item in regex_invalids if str(item.get("error") or "").strip())
+        compile_errors = sum(
+            1 for item in regex_invalids if str(item.get("error") or "").strip()
+        )
         zero_match = sum(
             1
             for per in regex_rules
@@ -975,9 +1166,7 @@ def write_regex_debug(
             and int(per.get("notes_matched") or 0) == 0
         )
         matched_ge1 = sum(
-            1
-            for per in regex_rules
-            if int(per.get("notes_matched") or 0) > 0
+            1 for per in regex_rules if int(per.get("notes_matched") or 0) > 0
         )
 
         lines.append("## Summary")
@@ -990,8 +1179,12 @@ def write_regex_debug(
         # Per-rule table
         lines.append("## Per-rule details")
         lines.append("")
-        lines.append("| # | source | compile | matches | error | pattern | replacement |")
-        lines.append("|---:|--------|---------|--------:|-------|---------|-------------|")
+        lines.append(
+            "| # | source | compile | matches | error | pattern | replacement |"
+        )
+        lines.append(
+            "|---:|--------|---------|--------:|-------|---------|-------------|"
+        )
 
         def _rule_source_name(raw_src: Any) -> str:
             _, _, label = _log_rule_group_and_name(raw_src, rules_root)
@@ -1021,7 +1214,14 @@ def write_regex_debug(
         for item in regex_invalids:
             rule = item.get("rule") or {}
             idx = rule.get("__rule_index", "?")
-            raw_src = rule.get("source_path") or rule.get("_source_path") or rule.get("__source_file") or rule.get("source_file") or rule.get("_source_file") or ""
+            raw_src = (
+                rule.get("source_path")
+                or rule.get("_source_path")
+                or rule.get("__source_file")
+                or rule.get("source_file")
+                or rule.get("_source_file")
+                or ""
+            )
             src = _rule_source_name(raw_src)
             err = str(item.get("error") or "").strip()
             pat = str(rule.get("pattern") or "")
@@ -1071,12 +1271,18 @@ def write_regex_debug(
                 lines.append("")
                 lines.append(f"- query: `{md_inline(per.get('query', ''))}`")
                 if per.get("query_input") is not None:
-                    lines.append(f"- query_input: `{md_inline(per.get('query_input', ''))}`")
+                    lines.append(
+                        f"- query_input: `{md_inline(per.get('query_input', ''))}`"
+                    )
                 lines.append(f"- exclude: `{md_inline(per.get('exclude', ''))}`")
                 if per.get("exclude_input") is not None:
-                    lines.append(f"- exclude_input: `{md_inline(per.get('exclude_input', ''))}`")
+                    lines.append(
+                        f"- exclude_input: `{md_inline(per.get('exclude_input', ''))}`"
+                    )
                 if has_search:
-                    lines.append(f"- search (Browser): `{md_inline(per.get('search', ''))}`")
+                    lines.append(
+                        f"- search (Browser): `{md_inline(per.get('search', ''))}`"
+                    )
                 if has_error:
                     err_html = _format_error_html(per.get("error", ""))
                     lines.append(f"- error: {err_html}")
@@ -1119,15 +1325,22 @@ def _init_report(cfg: RunConfig) -> Dict[str, Any]:
         "log_dir": str(cfg.log_dir),
         # * Extensive-debug settings (may be overridden later from config_snapshot)
         "extensive_debug": getattr(cfg, "extensive_debug", False),
-        "extensive_debug_max_examples": getattr(cfg, "extensive_debug_max_examples", 60),
+        "extensive_debug_max_examples": getattr(
+            cfg, "extensive_debug_max_examples", 60
+        ),
         "rules": 0,
-        "notes_touched": 0,        # notes matched by rules
-        "notes_changed": 0,        # actual commits
-        "notes_would_change": 0,   # simulated changes (esp. DRY_RUN)
+        "notes_touched": 0,  # notes matched by rules
+        "notes_changed": 0,  # actual commits
+        "notes_would_change": 0,  # simulated changes (esp. DRY_RUN)
         "guard_skips": 0,
         "per_rule": [],
         "report_paths": {},
+        # Remove-rule reporting (TXT remove_rule(s).txt files)
+        "remove_files_selected": [],
+        "remove_files_used": [],
+        "remove_stats_by_file": {},
     }
+
 
 def _init_per_rule(rule: Any, idx: int) -> Dict[str, Any]:
     # Normalize to a Rule dataclass for consistent access
@@ -1137,6 +1350,7 @@ def _init_per_rule(rule: Any, idx: int) -> Dict[str, Any]:
         # Fail-safe: build a minimal per-rule record
         return {
             "index": idx,
+            "generated_field_remove": False,
             "file": "",
             "source_file": "",
             "source_path": "",
@@ -1192,7 +1406,11 @@ def _init_per_rule(rule: Any, idx: int) -> Dict[str, Any]:
     # `file` is a short label (filename-only)
     file_name = ""
     try:
-        file_name = Path(str(raw_src)).name if raw_src else (str(getattr(r, "source_file", "")) or "")
+        file_name = (
+            Path(str(raw_src)).name
+            if raw_src
+            else (str(getattr(r, "source_file", "")) or "")
+        )
     except Exception:
         file_name = str(getattr(r, "source_file", "")) or ""
 
@@ -1207,7 +1425,11 @@ def _init_per_rule(rule: Any, idx: int) -> Dict[str, Any]:
             source_path = ""
 
     # Pattern display
-    patt_disp = r.pattern if isinstance(r.pattern, str) else (r.pattern[:1] if r.pattern else "")
+    patt_disp = (
+        r.pattern
+        if isinstance(r.pattern, str)
+        else (r.pattern[:1] if r.pattern else "")
+    )
 
     # Query/exclude display
     # - rules_io normalizes missing query to []
@@ -1236,8 +1458,12 @@ def _init_per_rule(rule: Any, idx: int) -> Dict[str, Any]:
     except Exception:
         search = ""
 
+    generated_field_remove = bool(
+        isinstance(rule, dict) and rule.get("_generated_field_remove")
+    )
     return {
         "index": idx,
+        "generated_field_remove": generated_field_remove,
         # * Short name for backward-compatible displays
         "file": file_name,
         # * Full source path preserved for group-aware logging
@@ -1304,13 +1530,17 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
     lines.append(f"Notes matched: {report.get('notes_touched', 0)}")
     if dry:
         lines.append(f"Notes that would change: {report.get('notes_would_change', 0)}")
-        lines.append(f"Notes actually changed (DRY RUN): {report.get('notes_changed', 0)}")
+        lines.append(
+            f"Notes actually changed (DRY RUN): {report.get('notes_changed', 0)}"
+        )
     else:
         lines.append(f"Notes changed: {report.get('notes_changed', 0)}")
     lines.append(f"Guard skips: {report.get('guard_skips', 0)}")
     lines.append("")
     for per in report.get("per_rule", []):
-        lines.append(f"- Rule {per.get('index')}: fields={per.get('fields')} flags={per.get('flags')} loop={per.get('loop')}")
+        lines.append(
+            f"- Rule {per.get('index')}: fields={per.get('fields')} flags={per.get('flags')} loop={per.get('loop')}"
+        )
         lines.append(f"  query={per.get('query')} exclude={per.get('exclude')}")
         if per.get("search"):
             lines.append(f"  search={per.get('search')}")
@@ -1386,8 +1616,12 @@ def _write_reports(report: Dict[str, Any], cfg: RunConfig) -> None:
             )
         ex = per.get("examples", [])
         for i, e in enumerate(ex, 1):
-            lines.append(f"  ex{i} [{e.get('field','?')}]: BEFORE: {e.get('before','')}")
-            lines.append(f"  ex{i} [{e.get('field','?')}]: AFTER : {e.get('after','')}")
+            lines.append(
+                f"  ex{i} [{e.get('field', '?')}]: BEFORE: {e.get('before', '')}"
+            )
+            lines.append(
+                f"  ex{i} [{e.get('field', '?')}]: AFTER : {e.get('after', '')}"
+            )
         lines.append("")
 
     # Store the text summary in the report (no files written here)

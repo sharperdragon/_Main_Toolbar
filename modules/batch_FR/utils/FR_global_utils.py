@@ -4,8 +4,8 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, List, Optional, Pattern
-from .data_defs import RunConfig  
 
 __all__ = [
     "TS_FORMAT",
@@ -19,12 +19,23 @@ __all__ = [
     "md_table_cell",
 ]
 
-TS_FORMAT: str = "%H-%M_%m-%d"  
+
+TS_FORMAT: str = "%H-%M_%m-%d"
+
+# Tracks repeated calls within the same formatted timestamp bucket
+_LAST_BASE_STAMP: str | None = None
+_LAST_BASE_COUNT: int = 0
+_NOW_STAMP_LOCK = Lock()
+
 DESKTOP_PATH: Path = Path("/Users/claytongoddard/Desktop")
 
 # Hard-coded rules path override
-RULES_PATH: Path = Path("/Users/claytongoddard/Library/Application Support/Anki2/addons21/_Main_Toolbar/modules/batch_FR/rules")
-MODULES_CONFIG_PATH: Path = Path("/Users/claytongoddard/Library/Application Support/Anki2/addons21/_Main_Toolbar/modules/modules_config.json")
+RULES_PATH: Path = Path(
+    "/Users/claytongoddard/Library/Application Support/Anki2/addons21/_Main_Toolbar/modules/batch_FR/rules"
+)
+MODULES_CONFIG_PATH: Path = Path(
+    "/Users/claytongoddard/Library/Application Support/Anki2/addons21/_Main_Toolbar/modules/modules_config.json"
+)
 
 # Path to the global field remove rules file
 FIELD_REMOVE_RULES_PATH: Path = Path(RULES_PATH) / "field_remove_rules.txt"
@@ -32,26 +43,52 @@ FIELD_REMOVE_RULES_PATH: Path = Path(RULES_PATH) / "field_remove_rules.txt"
 
 def _coerce_int(val, fallback: int) -> int:
     try:
-        return int(val)
-    except Exception:
+        if val is None:
+            return fallback
+        if isinstance(val, bool):
+            return fallback  # avoid True->1 surprises
+        return int(str(val).strip())
+    except (ValueError, TypeError):
         return fallback
+
 
 def _norm_path(p: str | None) -> Path | None:
     if not p:
         return None
     try:
-        return Path(os.path.expanduser(p)).resolve()
-    except Exception:
+        return Path(os.path.expanduser(str(p))).absolute()
+    except (TypeError, ValueError):
         return None
 
+
 def now_stamp() -> str:
-    return datetime.now().strftime(TS_FORMAT)
+    """
+    Returns a timestamp string. If called multiple times while the formatted
+    value hasn't changed (e.g., within the same minute for TS_FORMAT),
+    appends _2, _3, ... to keep it unique.
+    """
+    base = datetime.now().strftime(TS_FORMAT)
+
+    with _NOW_STAMP_LOCK:
+        global _LAST_BASE_STAMP, _LAST_BASE_COUNT
+
+        if base != _LAST_BASE_STAMP:
+            # New time bucket -> reset counter
+            _LAST_BASE_STAMP = base
+            _LAST_BASE_COUNT = 1
+            return base
+
+        # Same time bucket -> increment and suffix
+        _LAST_BASE_COUNT += 1
+        return f"{base}_{_LAST_BASE_COUNT}"
 
 
 # * Field remove rules helpers
 
+
 def load_field_remove_rules(path: Optional[Path] = None) -> List[Pattern[str]]:
     import re
+
     if path is None:
         path = FIELD_REMOVE_RULES_PATH
     patterns: List[Pattern[str]] = []
@@ -75,6 +112,7 @@ def load_field_remove_rules(path: Optional[Path] = None) -> List[Pattern[str]]:
 
 
 # * Anki Browser query helpers
+
 
 def anki_query_escape_controls(val: Any) -> str:
     """Return a query-safe string for Anki Browser/find_notes.
@@ -106,6 +144,7 @@ def anki_query_escape_controls(val: Any) -> str:
 
 
 # * Markdown-safe display helpers (debug logs)
+
 
 def _escape_control_chars(s: str) -> str:
     """Make control characters visible (for log readability + copy/paste)."""

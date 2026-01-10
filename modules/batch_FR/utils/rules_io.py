@@ -1,23 +1,18 @@
 from __future__ import annotations
 
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
+
+from .config_utils import get_batch_fr_config
+from .data_defs import Rule
+from .FR_global_utils import RULES_PATH
+
 # =========================
 # Rules I/O (files, schema, normalization)
 # ! Pure file + normalization utilities; no Anki calls here.
-
-from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
-import json
-import re
-import os
-import logging
-from .data_defs import Rule
-from .config_utils import get_batch_fr_config
-
-from .FR_global_utils import (
-    TS_FORMAT, MODULES_CONFIG_PATH, 
-    FIELD_REMOVE_RULES_PATH,
-    RULES_PATH, 
-    )
 
 
 # =========================
@@ -31,6 +26,120 @@ MODULES_DIR = Path(__file__).resolve().parents[2]
 
 # * Add-on root (the folder that contains `modules/`)
 ADDON_ROOT = MODULES_DIR.parent
+
+
+# =========================
+# Remove-rule file path resolution helper
+# =========================
+
+
+def resolve_remove_paths_from_config(
+    cfg: Dict[str, Any],
+) -> tuple[List[Path], Optional[Path]]:
+    """Resolve remove-rule file paths from config.
+
+    Returns:
+      - remove_paths: list of *_remove_rules.txt (or configured suffix) files to load
+      - field_remove_path: optional field_remove_rules file path
+
+    Notes:
+      - This function returns only paths that exist on disk.
+      - It does not load or shape rules; it only resolves paths.
+      - Intended for logging/reporting so engine/logger can list remove files used.
+    """
+    cfg = get_batch_fr_config(cfg)
+
+    remove_path = cfg.get("remove_path")
+    field_remove_path = cfg.get("field_remove_path")
+    rules_root = cfg.get("rules_path")
+    remove_suffix = cfg.get("remove_rules_suffix")
+    field_remove_name = cfg.get("field_remove_rules_name")
+
+    # * IMPORTANT: field_remove_rules must NOT be treated as a generic remove_rules file.
+    #   It is handled separately as compiled per-field patterns.
+    field_remove_filename = (
+        str(field_remove_name or "field_remove_rules.txt").strip().lower()
+    )
+
+    remove_paths: List[Path] = []
+    seen_remove: set[str] = set()
+
+    def _add_if_file(p: Path) -> None:
+        try:
+            rp = Path(p).expanduser().resolve()
+        except Exception:
+            rp = p
+        s = str(rp)
+        if s in seen_remove:
+            return
+        try:
+            if rp.exists() and rp.is_file():
+                seen_remove.add(s)
+                remove_paths.append(rp)
+        except Exception:
+            return
+
+    # 3) Resolve field-remove path (optional)
+    field_path_obj: Optional[Path] = None
+
+    # 1) Discover remove files under rules_root via suffix (recursive)
+    if rules_root and remove_suffix:
+        base = resolve_rules_root(rules_root)
+        try:
+            if base.exists() and base.is_dir():
+                # Stable ordering for deterministic logs
+                found = sorted(
+                    [p for p in base.rglob(f"*{remove_suffix}") if p.is_file()],
+                    key=lambda x: str(x),
+                )
+                for p in found:
+                    # Skip the dedicated field-remove file from generic remove discovery
+                    try:
+                        if p.name.lower() == field_remove_filename:
+                            continue
+                    except Exception:
+                        pass
+                    _add_if_file(p)
+        except Exception as e:
+            log_warning(
+                f"resolve_remove_paths_from_config rglob failed for {base}: {e}"
+            )
+
+    # 2) Explicit single remove_path (optional)
+    if remove_path:
+        try:
+            cand = resolve_rule_path(remove_path)
+            try:
+                if Path(cand).name.lower() == field_remove_filename:
+                    # Treat as field-remove source, not a generic remove_rules file
+                    if cand.exists() and cand.is_file():
+                        field_path_obj = cand.resolve()
+                else:
+                    _add_if_file(cand)
+            except Exception:
+                _add_if_file(cand)
+        except Exception:
+            pass
+
+    if field_remove_path:
+        try:
+            cand = resolve_rule_path(field_remove_path)
+            if cand.exists() and cand.is_file():
+                field_path_obj = cand.resolve()
+        except Exception:
+            field_path_obj = None
+
+    # If not explicitly set, try rules_root / field_remove_name
+    if field_path_obj is None and rules_root and field_remove_name:
+        try:
+            base = resolve_rules_root(rules_root)
+            cand = base / field_remove_name
+            if cand.exists() and cand.is_file():
+                field_path_obj = cand.resolve()
+        except Exception:
+            field_path_obj = None
+
+    return remove_paths, field_path_obj
 
 
 def resolve_rule_path(path: Union[str, Path]) -> Path:
@@ -63,7 +172,7 @@ def resolve_rule_path(path: Union[str, Path]) -> Path:
     # 1) If the path explicitly starts with "modules/", interpret it relative
     #    to the add-on root.
     if parts and parts[0] == "modules":
-        cand = (ADDON_ROOT / p)
+        cand = ADDON_ROOT / p
         if cand.exists():
             return cand.resolve()
         return cand.resolve()
@@ -164,7 +273,9 @@ def discover_rule_files(root: Union[str, Path]) -> List[Path]:
 
     # * If it still does not exist, nothing to discover
     if not p.exists():
-        log_warning(f"discover_rule_files: rules root does not exist: {p} (input={root})")
+        log_warning(
+            f"discover_rule_files: rules root does not exist: {p} (input={root})"
+        )
         return []
 
     # * Collect all matching files recursively under the root directory
@@ -215,7 +326,6 @@ def discover_from_config(
     return sort_paths_by_preference(paths, order_preference)
 
 
-
 def rules_from_paths(paths: Sequence[Union[str, Path]]) -> List[Dict[str, Any]]:
     """
     * Load and concatenate rules from many files.
@@ -225,6 +335,7 @@ def rules_from_paths(paths: Sequence[Union[str, Path]]) -> List[Dict[str, Any]]:
         p = resolve_rule_path(path)
         rules.extend(load_rules_from_file(p))
     return rules
+
 
 def rules_from_paths_as_rules(
     paths: Sequence[Union[str, Path]],
@@ -377,6 +488,7 @@ def load_plain_rules(
 # Schema / normalization
 # =========================
 
+
 def load_remove_patterns(path: Union[str, Path]) -> List[str]:
     """
     * Load remove patterns from a TXT file (line-delimited).
@@ -516,9 +628,7 @@ def normalize_rule(
         r["delete_chars"] = {
             "max_chars": int(dc),
             "count_spaces": bool(
-                (defaults or {})
-                .get("delete_chars", {})
-                .get("count_spaces", True)
+                (defaults or {}).get("delete_chars", {}).get("count_spaces", True)
             ),
         }
     else:
@@ -530,6 +640,7 @@ def normalize_rule(
         r["delete_chars"] = d
 
     return r
+
 
 def to_rule(r: Dict[str, Any]) -> Rule:
     """Convert a normalized rule dict into the Rule dataclass.
@@ -598,11 +709,14 @@ def to_rule(r: Dict[str, Any]) -> Rule:
         flags=flags,
         fields=fields,
         loop=loop,
-        delete_chars=dict(delete_chars) if isinstance(delete_chars, dict) else {"max_chars": 0, "count_spaces": True},
+        delete_chars=dict(delete_chars)
+        if isinstance(delete_chars, dict)
+        else {"max_chars": 0, "count_spaces": True},
         source_file=source_file,
         source_path=source_path,
         source_index=source_index,
     )
+
 
 def load_rule_schema(path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     """Optional: load a JSON schema. Stub returns {} if unused."""
@@ -658,7 +772,6 @@ def maybe_validate_rules(
         if on_error == "keep":
             out.append(r)
     return out
-
 
 
 # =========================
@@ -771,9 +884,7 @@ def load_rules_from_config(
 
     rules: List[Dict[str, Any]] = []
     for p in paths:
-        rules.extend(
-            load_rules_from_file(p, defaults=defaults, fields_all=fields_all)
-        )
+        rules.extend(load_rules_from_file(p, defaults=defaults, fields_all=fields_all))
 
     schema = load_rule_schema(schema_path) if schema_path else {}
     validated = maybe_validate_rules(rules, schema, on_error=on_error)
@@ -796,41 +907,10 @@ def load_remove_sets_from_config(
         defaults["delete_chars"] = {"max_chars": 0, "count_spaces": True}
 
     fields_all = cfg.get("fields_all", [])
-    remove_path = cfg.get("remove_path")
-    field_remove_path = cfg.get("field_remove_path")
-    rules_root = cfg.get("rules_path")
-    remove_suffix = cfg.get("remove_rules_suffix")
-    field_remove_name = cfg.get("field_remove_rules_name")
 
-    remove_paths: List[Path] = []
-    seen_remove: set[str] = set()
-
-    def _add_remove_path(p: Path) -> None:
-        s = str(p)
-        if s not in seen_remove:
-            seen_remove.add(s)
-            remove_paths.append(p)
-    if rules_root and remove_suffix:
-        base = resolve_rules_root(rules_root)
-        if base.exists() and base.is_dir():
-            try:
-                # ? Use rglob so nested folders (e.g. Main/, Beta/) are included
-                for p in base.rglob(f"*{remove_suffix}"):
-                    if p.is_file():
-                        _add_remove_path(p.resolve())
-            except Exception as e:
-                log_warning(f"load_remove_sets_from_config rglob failed for {base}: {e}")
-    if remove_path:
-        _add_remove_path(resolve_rule_path(remove_path))
-
-    # Field-remove rules are optional. Only set the path if the file exists.
-    if not field_remove_path and rules_root and field_remove_name:
-        base = resolve_rules_root(rules_root)
-        cand = (base / field_remove_name).resolve()
-        if cand.exists() and cand.is_file():
-            field_remove_path = str(cand)
-        else:
-            field_remove_path = None
+    # Resolve which remove files exist and will be used in this run.
+    # (Execution uses the shaped rules below; this is the canonical path resolver.)
+    remove_paths, field_path_obj = resolve_remove_paths_from_config(cfg)
 
     if remove_paths:
         all_remove_rules: List[Dict[str, Any]] = []
@@ -846,8 +926,8 @@ def load_remove_sets_from_config(
             )
         out["remove"] = all_remove_rules
 
-    if field_remove_path:
-        frp = resolve_rule_path(field_remove_path)
+    if field_path_obj is not None:
+        frp = field_path_obj
         if frp.exists() and frp.is_file():
             try:
                 pats = load_remove_patterns(frp)
@@ -859,10 +939,14 @@ def load_remove_sets_from_config(
                 )
             except Exception as e:
                 # Non-fatal: field-remove rules should never block the run.
-                log_warning(f"load_remove_sets_from_config: failed to load field_remove patterns from {frp}: {type(e).__name__}: {e}")
+                log_warning(
+                    f"load_remove_sets_from_config: failed to load field_remove patterns from {frp}: {type(e).__name__}: {e}"
+                )
         else:
             # Non-fatal: file missing.
-            log_warning(f"load_remove_sets_from_config: optional field_remove patterns file missing; skipping: {frp}")
+            log_warning(
+                f"load_remove_sets_from_config: optional field_remove patterns file missing; skipping: {frp}"
+            )
     return out
 
 

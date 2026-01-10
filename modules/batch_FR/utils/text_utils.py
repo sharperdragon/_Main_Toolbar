@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-# =========================
-# Text helpers (HTML, visibility, batching)
-# =========================
-# ! Centralize all small_utils-like helpers here.
-
-from typing import Iterable, Iterator, List, Optional
 import html
-from .data_defs import RunConfig  
 import re
+from typing import Iterable, Iterator
 
 # * Precompiled regexes (faster at runtime)
-BR_REGEX = re.compile(r"(?:<\s*br\s*/?\s*>|</\s*p\s*>|</\s*div\s*>|<\s*li\s*>)", re.IGNORECASE)
+BR_REGEX = re.compile(
+    r"(?:<\s*br\s*/?\s*>|</\s*p\s*>|</\s*div\s*>|<\s*li\s*>)", re.IGNORECASE
+)
 TAG_REGEX = re.compile(r"<[^>]+>")
 WS_REGEX = re.compile(r"\s+")
 
@@ -23,7 +19,9 @@ __all__ = [
     "normalize_newlines",
     "unescape_entities",
     "safe_truncate",
+    "pattern_has_backspace",
 ]
+
 
 def strip_html(s: str, /, *, preserve_breaks: bool = False) -> str:
     """
@@ -39,6 +37,7 @@ def strip_html(s: str, /, *, preserve_breaks: bool = False) -> str:
     # strip remaining tags
     return TAG_REGEX.sub("", text)
 
+
 def normalize_newlines(s: str) -> str:
     """* Convert CRLF/CR to LF for consistent processing."""
     if not s:
@@ -50,11 +49,30 @@ def unescape_entities(s: str) -> str:
     """* HTML entity → Unicode (single pass)."""
     return html.unescape(s or "")
 
+
 def collapse_ws(s: str) -> str:
     """
     * Collapse runs of whitespace to a single space and trim ends.
     """
     return WS_REGEX.sub(" ", (s or "")).strip()
+
+
+def pattern_has_backspace(pattern: str) -> bool:
+    """Return True if a regex pattern contains the BACKSPACE control char (\x08).
+
+    Why this exists:
+    - In JSON, the escape sequence `\b` is a *backspace* character, not a regex word-boundary.
+    - If a rule file includes `"\b"` it will parse into `\x08` and the regex will not behave as intended.
+
+    Use this to warn in logs when a pattern is likely corrupted.
+    """
+    if not pattern:
+        return False
+    try:
+        return "\x08" in pattern
+    except Exception:
+        return False
+
 
 def visible_len(s: str, *, count_spaces: bool = True) -> int:
     """
@@ -70,6 +88,7 @@ def visible_len(s: str, *, count_spaces: bool = True) -> int:
     if not count_spaces:
         text = WS_REGEX.sub("", text)
     return len(text)
+
 
 def safe_truncate(s: str, max_chars: int, /, *, count_spaces: bool = True) -> str:
     """
@@ -91,8 +110,9 @@ def safe_truncate(s: str, max_chars: int, /, *, count_spaces: bool = True) -> st
         else:
             hi = mid
     # Ensure we don't exceed the target by one char
-    out = s[:max(lo - 1, 0)]
+    out = s[: max(lo - 1, 0)]
     return out
+
 
 def chunks(iterable: Iterable, size: int) -> Iterator[list]:
     """

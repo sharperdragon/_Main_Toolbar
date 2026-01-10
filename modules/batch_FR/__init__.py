@@ -8,6 +8,7 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     mw = None  # Allow import outside Anki (e.g., tests)
 
+from .utils.FR_global_utils import now_stamp
 
 try:
     from .utils.engine import (
@@ -25,7 +26,6 @@ from .utils.top_helper import (
     _discover_rule_files,
     _get_rules_root,
     load_batch_fr_config,
-    now_stamp,
 )
 
 
@@ -292,8 +292,8 @@ def run_from_toolbar() -> None:
                 # Example: "dry run: 2 notes would change (4 hits) across 1 rule (guard skips: 1)"
                 parts = [
                     "Batch F&R dry run:",
-                    f"{note_count} note"
-                    + ("" if note_count == 1 else "s")
+                    f"{would_change} note"
+                    + ("" if would_change == 1 else "s")
                     + " would change",
                 ]
                 if isinstance(note_hits, int):
