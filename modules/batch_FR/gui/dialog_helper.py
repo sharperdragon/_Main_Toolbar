@@ -320,17 +320,20 @@ def execute_batch_fr_from_payload(
     Required behavior:
       - Always call the real engine (`utils.engine.run_batch_find_replace`).
       - Pass full `config_snapshot` (modules_config.json dict).
-      - Treat UI-selected files as `rulesets`.
+      - Treat UI-selected files as `rules_files` so engine routing can classify
+        JSON/JSONL rules vs remove TXT selections correctly.
 
     Returns the engine report dict.
     """
     selected_paths = _coerce_selected_rule_paths(payload)
     dry_run = bool(payload.get("dry_run", True))
 
-    # Engine will auto-discover if rulesets is empty, but we still pass selections when present.
+    # Engine will auto-discover if both rulesets/rules_files are empty.
+    # Pass UI selections as rules_files so remove TXT selection routing works.
     report = run_batch_find_replace(
         mw_ref,
-        rulesets=selected_paths or None,
+        rulesets=[],
+        rules_files=selected_paths or None,
         config_snapshot=config_snapshot,
         dry_run=dry_run,
         show_progress=True,

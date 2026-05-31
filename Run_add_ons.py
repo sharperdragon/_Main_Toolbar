@@ -9,7 +9,13 @@ from aqt import mw
 from aqt.utils import showText
 
 
-from .utils import CONFIG, register_addon_tool, build_config_tools 
+from .utils import (
+    CONFIG,
+    register_addon_tool,
+    build_config_tools,
+    normalize_icon_reference,
+    show_icon_drop_warning,
+)
 import json
 
 # Local definition to ensure UTF-8 reading for JSON files
@@ -38,7 +44,7 @@ def register_hardcoded_toolbar_settings(order_index=None):
         name="Toolbar Settings",
         callback=_open_toolbar_settings,
         submenu_name=CONFIG.get("toolbar_title", "Custom Tools"),
-        icon="icons/bent_menu-burger.png",
+        icon="icons/bent_menu-burger.svg",
         enabled=True,
         order_index=order_index,  # ^ allow explicit placement
     )
@@ -112,6 +118,7 @@ def load_tools_from_config():
 
     # Load and parse the JSON file containing tool definitions
     tools = load_json_file(tools_path)
+    dropped_icons: list[tuple[str, str]] = []
 
     # ! Build an ordered manifest: { submenu_name: [entries...] } in file order
     manifest: OrderedDict[str, list[dict]] = OrderedDict()
@@ -153,14 +160,22 @@ def load_tools_from_config():
                 )
                 continue
 
+            raw_icon = str(entry.get("icon") or "").strip()
+            normalized_icon = normalize_icon_reference(raw_icon) if raw_icon else ""
+            if raw_icon and not normalized_icon:
+                dropped_icons.append((entry["name"], raw_icon))
+
             register_addon_tool(
                 name=entry["name"],
                 callback=callback,
                 submenu_name=submenu_name,
-                icon=entry.get("icon"),
+                icon=normalized_icon,
                 enabled=entry.get("enabled", True),
                 order_index=idx,  # ! explicit position from file order
             )
+
+    if dropped_icons:
+        show_icon_drop_warning("loading toolbar actions", dropped_icons)
 
     # Add hard-coded item last (or pass an index to place it)
     register_hardcoded_toolbar_settings()

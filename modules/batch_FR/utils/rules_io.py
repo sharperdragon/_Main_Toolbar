@@ -28,6 +28,14 @@ MODULES_DIR = Path(__file__).resolve().parents[2]
 ADDON_ROOT = MODULES_DIR.parent
 
 
+def _rules_root_fallback() -> Optional[Path]:
+    """Return the resolved rules-root fallback from FR_global_utils.RULES_PATH."""
+    try:
+        return Path(RULES_PATH).expanduser().resolve()
+    except Exception:
+        return None
+
+
 # =========================
 # Remove-rule file path resolution helper
 # =========================
@@ -183,11 +191,8 @@ def resolve_rule_path(path: Union[str, Path]) -> Path:
     # 2) Default: relative to the `modules/` directory
     candidates.append(MODULES_DIR / p)
 
-    # 3) Fallbacks based on RULES_PATH (absolute in FR_global_utils)
-    try:
-        rp = Path(RULES_PATH).expanduser()
-    except Exception:
-        rp = None
+    # 3) Fallbacks based on RULES_PATH (dynamic/add-on-relative in FR_global_utils)
+    rp = _rules_root_fallback()
 
     if rp is not None:
         # If UI hands back paths like "Main/foo.json" or "zBeta/...",
@@ -264,12 +269,9 @@ def discover_rule_files(root: Union[str, Path]) -> List[Path]:
 
     # * If the path does not exist, attempt a RULES_PATH fallback (absolute)
     if not p.exists():
-        try:
-            rp = Path(RULES_PATH).expanduser()
-            if rp.exists() and rp.is_dir():
-                p = rp.resolve()
-        except Exception:
-            pass
+        rp = _rules_root_fallback()
+        if rp is not None and rp.exists() and rp.is_dir():
+            p = rp
 
     # * If it still does not exist, nothing to discover
     if not p.exists():

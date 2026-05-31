@@ -24,33 +24,113 @@ def load_json_file(path):
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "assets", "config.json")
 CONFIG = load_json_file(CONFIG_PATH)
 
-def resolve_icon_path(path):
+def _svg_candidate(path: str) -> str:
     """
-    Resolve icon path based on relative logic:
-    - Absolute path → return as-is
-    - ":assets/..." (pseudo-Qt resource) → map to add-on's ./assets/ directory
-    - ":"-prefixed (true Qt resource) → return as-is
-    - "assets/..." or "icons/..." → join with add-on directory
-    - Otherwise → assume under ./icons/
+    Convert an icon path candidate to SVG-only form.
+    Rules:
+    - .svg stays .svg
+    - .png becomes .svg
+    - no extension becomes .svg
+    - any other extension is rejected
     """
-    if not path:
+    clean = (path or "").strip().replace("\\", "/")
+    if not clean or clean.endswith("/"):
         return ""
 
-    if os.path.isabs(path):
-        return path
+    root, ext = os.path.splitext(clean)
+    ext = ext.lower()
+    if ext == ".svg":
+        return clean
+    if ext in ("", ".png"):
+        return f"{root}.svg" if root else ""
+    return ""
+
+
+def normalize_icon_reference(path: str) -> str:
+    """
+    Normalize user/config icon inputs into an existing SVG reference.
+    Returns:
+      - absolute path (for absolute inputs)
+      - :assets/... (for pseudo resource inputs)
+      - addon-relative path (icons/... or assets/...)
+      - "" when icon is invalid/missing/non-SVG-resolvable
+    """
+    raw = str(path or "").strip().replace("\\", "/")
+    if not raw:
+        return ""
 
     addon_dir = os.path.dirname(__file__)
 
-    if path.startswith(":assets/"):
-        return os.path.join(addon_dir, "assets", path.replace(":assets/", ""))
+    if raw.startswith(":assets/"):
+        rel = _svg_candidate(raw.replace(":assets/", "", 1))
+        if not rel:
+            return ""
+        abs_path = os.path.join(addon_dir, "assets", rel)
+        return f":assets/{rel}" if os.path.exists(abs_path) else ""
 
-    if path.startswith(":"):
-        return path
+    # Strict mode: allow only :assets/... pseudo-resource form.
+    if raw.startswith(":"):
+        return ""
 
-    if path.startswith("assets/") or path.startswith("icons/"):
-        return os.path.join(addon_dir, path)
+    if os.path.isabs(raw):
+        abs_candidate = _svg_candidate(raw)
+        return abs_candidate if abs_candidate and os.path.exists(abs_candidate) else ""
 
-    return os.path.join(addon_dir, "icons", path)
+    rel = raw if raw.startswith(("assets/", "icons/")) else os.path.join("icons", raw)
+    rel = _svg_candidate(rel)
+    if not rel:
+        return ""
+    abs_path = os.path.join(addon_dir, rel)
+    return rel if os.path.exists(abs_path) else ""
+
+
+def resolve_icon_path(path):
+    """
+    Resolve icon path for runtime QIcon loading.
+    This uses strict SVG normalization and returns an absolute filesystem path.
+    """
+    normalized = normalize_icon_reference(path)
+    if not normalized:
+        return ""
+
+    addon_dir = os.path.dirname(__file__)
+
+    if normalized.startswith(":assets/"):
+        return os.path.join(addon_dir, "assets", normalized.replace(":assets/", "", 1))
+
+    if os.path.isabs(normalized):
+        return normalized
+
+    return os.path.join(addon_dir, normalized)
+
+
+def show_icon_drop_warning(context: str, dropped_icons: list[tuple[str, str]]) -> None:
+    """
+    Show a single aggregated warning for icons that were dropped because they
+    could not be resolved to existing SVG files.
+    """
+    if not dropped_icons:
+        return
+
+    seen = set()
+    lines = []
+    for name, icon_path in dropped_icons:
+        clean_name = (name or "<unnamed>").strip() or "<unnamed>"
+        clean_icon = (icon_path or "").strip() or "<empty>"
+        key = (clean_name, clean_icon)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"- {clean_name}: {clean_icon}")
+
+    if not lines:
+        return
+
+    showText(
+        "These icons were removed because they do not resolve to existing SVG files "
+        f"while {context}:\n\n" + "\n".join(lines),
+        title=CONFIG.get("toolbar_title", "Custom Tools") + " Icon Warning",
+    )
 
 
 def format_config_label(addon: str, config: dict) -> str:
@@ -139,13 +219,23 @@ def build_config_tools(config, make_open_fn):
         List[dict]: List of tool definitions with name, callback, icon, and other display settings.
     """
     tools = []
+    dropped_icons: list[tuple[str, str]] = []
+    default_icon_raw = config.get("default_icon")
+    default_icon = normalize_icon_reference(default_icon_raw)
+
     for addon in config.get("Other_addon_names", []):
         label = format_config_label(addon, config)
+        if default_icon_raw and not default_icon:
+            dropped_icons.append((label, default_icon_raw))
         tools.append(dict(
             name=label,  # includes emoji + nickname fallback
             callback=make_open_fn(addon),
             submenu_name="Addon Configs",
-            icon=config.get("default_icon"),
+            icon=default_icon,
             enabled=True
         ))
+
+    if dropped_icons:
+        show_icon_drop_warning("building Add-ons Configurations menu", dropped_icons)
+
     return tools

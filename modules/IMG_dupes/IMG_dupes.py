@@ -1,70 +1,28 @@
-# AC_IMG_DUPES.py — Native API version for internal Anki execution
+from __future__ import annotations
 
-from aqt import mw
-from aqt.utils import showInfo
-from anki.notes import Note
+"""
+Deprecated compatibility wrapper.
 
-from typing import List
-import re
+This file is kept for older imports and forwards to the active entrypoint in:
+`modules/IMG_dupes/__init__.py`.
+"""
 
-def run_img_dupes_script():
-    print("🚀 Starting AC_IMG_DUPES inside Anki...")
+from pathlib import Path
 
-    # Step 1: Find all notes with the target tag
-    query = "tag:#Temp::Dupe_img"
-    note_ids = mw.col.find_notes(query)
-    print(f"📌 Found {len(note_ids)} notes matching query: {query}")
-    
-    if not note_ids:
-        showInfo("No notes found with tag: #Temp::Dupe_img")
-        return
 
-    removed_nids: List[int] = []
-    for nid in note_ids:
-        note: Note = mw.col.get_note(nid)
-        changed = False
+def run_img_dupes_script() -> None:
+    """Forward to the active IMG dupes entrypoint."""
+    try:
+        from . import run_img_dupes_script as _active_run
+    except Exception:
+        import sys
 
-        for field in ['Text', 'Extra', 'Extra2', 'Extra3', 'Extra4', 'Extra5']:
-            if field not in note:
-                continue
-            original = note[field]
+        repo_root = Path(__file__).resolve().parents[2]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from modules.IMG_dupes import run_img_dupes_script as _active_run  # type: ignore
+    _active_run()
 
-            # Extract all <img> tags
-            imgs = re.findall(r'<img [^>]*src="([^"]+)"[^>]*>', original, flags=re.IGNORECASE)
-            if not imgs or len(set(imgs)) == len(imgs):
-                continue  # No dupes
 
-            seen = set()
-            updated_html = ""
-            split = re.split(r'(<img [^>]*src="[^"]+"[^>]*>)', original)
-
-            for chunk in split:
-                match = re.search(r'<img [^>]*src="([^"]+)"[^>]*>', chunk)
-                if match:
-                    src = match.group(1)
-                    if src not in seen:
-                        updated_html += chunk
-                        seen.add(src)
-                    else:
-                        changed = True  # This is a duplicate <img>, skip it
-                else:
-                    updated_html += chunk
-
-            if updated_html != original:
-                print(f"🧹 Removed dupes in field '{field}' of note {nid}")
-                note[field] = updated_html
-                changed = True
-
-        if changed:
-            note.flush()
-            removed_nids.append(nid)
-
-    msg = f"✅ Done. Cleaned {len(removed_nids)} notes."
-    print(msg)
-    showInfo(msg)
-
-    if len(removed_nids) > 45:
-        backup_path = "/Users/claytongoddard/ANki/Missing Media/backups/dupe_img_nids.txt"
-        with open(backup_path, "w") as f:
-            f.write("\n".join(str(nid) for nid in removed_nids))
-        print(f"📝 Wrote backup of {len(removed_nids)} NIDs to: {backup_path}")
+if __name__ == "__main__":
+    run_img_dupes_script()

@@ -14,7 +14,7 @@ from aqt.webview import AnkiWebView
 from aqt.utils import showInfo, showText
 from aqt import gui_hooks
 
-from .utils import _refresh_menu
+from .utils import _refresh_menu, normalize_icon_reference, show_icon_drop_warning
 
 # --- Paths & constants ---
 ADDON_DIR = os.path.dirname(__file__)
@@ -69,7 +69,7 @@ class ToolbarEditorDialog(QDialog):
         # Open modeless so Anki remains interactive; destroy widget on close
         self.setModal(False)
         self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         # Layout + WebView
         lay = QVBoxLayout(self)
@@ -120,30 +120,31 @@ class ToolbarEditorDialog(QDialog):
                     data = json.load(f)
                     # ! Keep the hard-coded item out of the editor grid
                     data = [e for e in (data or []) if not _is_toolbar_settings(e)]
+                    dropped_icons: list[tuple[str, str]] = []
+                    for entry in data:
+                        self._normalize_icon_entry(entry, dropped_icons)
+                    if dropped_icons:
+                        show_icon_drop_warning("loading toolbar actions into the editor", dropped_icons)
                     return data
         except Exception:
             showText(traceback.format_exc(), title="Load Actions Error")
         return []
 
-    def _prefer_svg_path(self, path: str) -> str:
-        """If path ends with .png and a sibling .svg exists, return the .svg path; otherwise return original."""
-        try:
-            if not path or not path.lower().endswith(".png"):
-                return path
-            # Respect relative paths under assets/icons
-            base = path[:-4]  # strip .png
-            candidate = base + ".svg"
-            # If path is relative, resolve against addon dir
-            if not os.path.isabs(candidate):
-                abs_candidate = os.path.join(ADDON_DIR, candidate)
-            else:
-                abs_candidate = candidate
-            if os.path.exists(abs_candidate):
-                # Return the same style (relative vs absolute) as input, but with .svg
-                return candidate if not os.path.isabs(path) else abs_candidate
-            return path
-        except Exception:
-            return path
+    def _normalize_icon_entry(self, entry: Dict[str, Any], dropped_icons: list[tuple[str, str]]) -> None:
+        """Normalize one entry's icon to existing SVG path or drop it."""
+        raw_icon = str(entry.get("icon") or "").strip()
+        if not raw_icon:
+            entry["icon"] = ""
+            return
+
+        normalized = normalize_icon_reference(raw_icon)
+        if normalized:
+            entry["icon"] = normalized
+            return
+
+        name = (entry.get("name") or "<unnamed>").strip() or "<unnamed>"
+        dropped_icons.append((name, raw_icon))
+        entry["icon"] = ""
 
     def _inject_model(self, data: list[Dict[str, Any]]) -> None:
         # Pass JSON string to JS hydrate(jsonStr)
@@ -170,12 +171,10 @@ class ToolbarEditorDialog(QDialog):
         if action == "save":
             try:
                 tools = json.loads(rest)
-                # Normalize separators and prefer SVG icons
+                dropped_icons: list[tuple[str, str]] = []
+                # Normalize separators and enforce SVG-only icons
                 for e in tools:
-                    # Prefer .svg over .png when available
-                    icon_path = e.get("icon") or ""
-                    if icon_path:
-                        e["icon"] = self._prefer_svg_path(icon_path)
+                    self._normalize_icon_entry(e, dropped_icons)
                     name = (e.get("name") or "").strip()
                     if name in ("---", "—", "——", "———", "————", "—————"):
                         e["type"] = "separator"
@@ -192,6 +191,8 @@ class ToolbarEditorDialog(QDialog):
                 showInfo("Saved. Reopen the Tools menu to see changes.")
                 # ^ Re-hydrate with the filtered model so the row never reappears
                 self._inject_model(clean_tools)
+                if dropped_icons:
+                    show_icon_drop_warning("saving toolbar actions", dropped_icons)
             except Exception:
                 showText(traceback.format_exc(), title="Save Error")
 

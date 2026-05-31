@@ -79,13 +79,15 @@ def _load_pairs_from_json(path: Path) -> List[Pair]:
             continue
         # 1) direct old/new
         if isinstance(item, dict) and "old" in item and "new" in item:
-            old = str(item["old"]).strip(); new = str(item["new"]).strip()
+            old = str(item["old"]).strip()
+            new = str(item["new"]).strip()
             if old and new and old != new:
                 out.append(Pair(old=old, new=new, src="json", kind="literal"))
             continue
         # 2) list form ["old","new"]
         if isinstance(item, list) and len(item) >= 2:
-            old = str(item[0]).strip(); new = str(item[1]).strip()
+            old = str(item[0]).strip()
+            new = str(item[1]).strip()
             if old and new and old != new:
                 out.append(Pair(old=old, new=new, src="json", kind="literal"))
             continue
@@ -146,7 +148,7 @@ def _resolve_chains(pairs: Sequence[Pair]) -> Tuple[List[Pair], List[Tuple[str, 
         cur = x
         while cur in nxt:
             if cur in seen:
-                return None  
+                return None
             seen.add(cur)
             cur = nxt[cur]
         return cur

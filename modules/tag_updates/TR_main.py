@@ -4,9 +4,8 @@ import csv
 import json
 import re, os
 import difflib
-from typing import Dict, List, Tuple, Optional, Literal 
+from typing import Callable, Dict, Iterable, List, Literal, Optional, Sequence, Set, Tuple
 from time import strftime
-from typing import Dict, Iterable, List, Sequence, Tuple, Set
 
 
 from aqt import mw
@@ -362,6 +361,8 @@ def _run_tag_renamer_core(
     json_files: list[Path],
     show_preflight_prompt: bool = True,
     show_final_summary: bool = True,
+    on_complete: Callable[[bool], None] | None = None,
+    scope_query: str = "",
 ) -> None:
     """
     Core pipeline for the tag renamer.
@@ -383,17 +384,31 @@ def _run_tag_renamer_core(
         show_final_summary: If True, display the final “Global Tag Renamer — Done”
             summary popup. Callers like Tag Updates that want to provide their own
             combined summary can pass False to suppress this extra window.
+        on_complete: Optional callback fired when this async run completes.
+            Receives True on success, False on cancel/failure.
+        scope_query: Optional Anki Browser query to further limit notes touched.
     """
+    def _notify_complete(success: bool) -> None:
+        if on_complete is None:
+            return
+        try:
+            on_complete(success)
+        except Exception:
+            # Completion callbacks are best-effort and should not crash runs.
+            pass
+
     if parent is None:
         parent = mw
 
     if not raw_pairs:
         QMessageBox.warning(parent, "Global Tag Renamer", f"No rule files found in: {RULES_DIR}")
+        _notify_complete(False)
         return
 
     # Resolve allow_regex from config per run
     cfg = _cfg_tag()
     allow_regex = bool(cfg.get("allow_regex", True))
+    scope_query_norm = str(scope_query or "").strip()
 
     # Preflight against the live collection using QueryOp for async safety
     def _pf(col):
@@ -418,6 +433,7 @@ def _run_tag_renamer_core(
                 f"Cycles blocked: {len(pf.cycles_blocked)}\n\n"
                 f"DRY_RUN (this run) = {run_dry}\n"
                 f"ALLOW_REGEX (config) = {allow_regex}\n"
+                f"SCOPE_QUERY = {scope_query_norm or '(none)'}\n"
                 "\nProceed with global rename?"
             )
             if (
@@ -428,11 +444,17 @@ def _run_tag_renamer_core(
                 )
                 != QMessageBox.StandardButton.Yes
             ):
+                _notify_complete(False)
                 return
 
         # Execute in background with a collection handle (single undo step)
         def _exec(col):
-            out = _execute(col, pairs_for_exec, dry_run=run_dry)
+            out = _execute(
+                col,
+                pairs_for_exec,
+                dry_run=run_dry,
+                scope_query=scope_query_norm,
+            )
             # Build an OpChanges payload so Anki knows what to refresh.
             # Dry run ⇒ no changes; live run ⇒ tags and notes changed.
             try:
@@ -446,12 +468,22 @@ def _run_tag_renamer_core(
             # Finish progress UI then show results
             mw.progress.finish()
             out = res.outcome
-            _write_report(out, pf, run_dry, allow_regex, csv_files, json_files)
+            _write_report(
+                out,
+                pf,
+                run_dry,
+                allow_regex,
+                csv_files,
+                json_files,
+                scope_query=scope_query_norm,
+            )
             summary = (
                 f"Pairs applied: {len(out.applied)}\n"
                 f"Pairs skipped: {len(out.skipped)}\n"
                 f"Total notes changed: {out.total_notes_changed}"
             )
+            if scope_query_norm:
+                summary = f"Filter: {scope_query_norm}\n\n{summary}"
             # If nothing actually changed, add a brief hint so the user understands why.
             if out.total_notes_changed == 0 and out.applied:
                 summary += (
@@ -461,11 +493,13 @@ def _run_tag_renamer_core(
                 )
             if show_final_summary:
                 QMessageBox.information(parent, "Global Tag Renamer — Done", summary)
+            _notify_complete(True)
 
         def _on_failure(e):
             # Ensure progress UI is closed on error
             mw.progress.finish()
             QMessageBox.critical(parent, "Global Tag Renamer — Error", str(e))
+            _notify_complete(False)
 
         # Start a labeled progress indicator (compatible on your build)
         mw.progress.start(label="Renaming tags globally…", immediate=False)
@@ -476,12 +510,16 @@ def _run_tag_renamer_core(
             .run_in_background()
 
     # Kick off preflight in background (fixes .run_now crash on your Anki build)
+    def _on_preflight_failure(e) -> None:
+        QMessageBox.critical(parent, "Global Tag Renamer — Error", str(e))
+        _notify_complete(False)
+
     QueryOp(
         parent=mw,
         op=_pf,
         success=_after_preflight,
     ).failure(
-        lambda e: QMessageBox.critical(parent, "Global Tag Renamer — Error", str(e))
+        _on_preflight_failure
     ).run_in_background()
 
 
@@ -665,17 +703,25 @@ def _build_tag_regex_query(tag: str) -> str:
     return f"tag:re:{pattern}"
 
 
-def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
+def _execute(
+    col,
+    pairs: Sequence[Pair],
+    dry_run: bool,
+    scope_query: str = "",
+) -> Outcome:
     applied: List[Tuple[str, str, int, str]] = []
     skipped: List[Tuple[str, str, str]] = []
     warnings: List[str] = []
     total_changed = 0
+    scope_query_norm = str(scope_query or "").strip()
 
     if dry_run:
         for p in pairs:
             # Estimate impacted notes cheaply
             try:
                 query = _build_tag_regex_query(p.old)
+                if scope_query_norm:
+                    query = f"{query} {scope_query_norm}".strip()
                 count = len(col.find_notes(query))
             except Exception as e:
                 # ! If count fails, keep going but log a warning
@@ -692,8 +738,9 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
         notes_changed = 0
         fast_used = False
 
-        # * Fast path: use TagManager.rename if available
-        if has_fast():
+        # * Fast path: use TagManager.rename if available.
+        # ! Scope-filtered runs must stay per-note to avoid global tag table renames.
+        if has_fast() and not scope_query_norm:
             try:
                 # Fast path: move subtree too, as Anki's TagManager.rename handles hierarchies.
                 # Some builds expose rename(old, new); if signature changes, fallback will handle it.
@@ -708,6 +755,8 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
             #   If counting fails, we STILL treat this pair as applied.
             try:
                 query = _build_tag_regex_query(p.new)
+                if scope_query_norm:
+                    query = f"{query} {scope_query_norm}".strip()
                 notes_changed = len(col.find_notes(query))
             except Exception as e:
                 warnings.append(f'Fast path count failed for "{p.old}"→"{p.new}": {e!s}')
@@ -721,6 +770,8 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
         # Fallback: chunked per-note updates (still global scope)
         try:
             query = _build_tag_regex_query(p.old)
+            if scope_query_norm:
+                query = f"{query} {scope_query_norm}".strip()
             nids = col.find_notes(query)
         except Exception as e:
             skipped.append((p.old, p.new, f"search failed: {e!s}"))
@@ -761,7 +812,15 @@ def _execute(col, pairs: Sequence[Pair], dry_run: bool) -> Outcome:
 # =========================
 # Reporting
 # =========================
-def _write_report(out: Outcome, pf: Preflight, run_mode_dry: bool, allow_regex: bool, csv_files: list[Path], json_files: list[Path]) -> Path:
+def _write_report(
+    out: Outcome,
+    pf: Preflight,
+    run_mode_dry: bool,
+    allow_regex: bool,
+    csv_files: list[Path],
+    json_files: list[Path],
+    scope_query: str = "",
+) -> Path:
     LOG_PATH.mkdir(parents=True, exist_ok=True)
     stamp = strftime(TS_FORMAT)
     path = LOG_PATH / f"Global_Tag_Renamer_{stamp}.md"
@@ -772,6 +831,7 @@ def _write_report(out: Outcome, pf: Preflight, run_mode_dry: bool, allow_regex: 
     lines.append(f"- DRY_RUN (default): {DRY_RUN}")
     lines.append(f"- DRY_RUN (this run): {run_mode_dry}")
     lines.append(f"- ALLOW_REGEX (config): {allow_regex}")
+    lines.append(f"- SCOPE_QUERY: {scope_query or '(none)'}")
     lines.append("")
     lines.append("## Preflight\n")
     lines.append(f"Loaded pairs: {pf.total_loaded} (CSV files: {len(csv_files)}, JSON files: {len(json_files)})")
@@ -843,6 +903,8 @@ def _write_report(out: Outcome, pf: Preflight, run_mode_dry: bool, allow_regex: 
         lines.append("|---|---|---:|")
         for old, _new, cnt, _mode in out.applied:
             query = _build_tag_regex_query(old)
+            if scope_query:
+                query = f"{query} {scope_query}".strip()
             lines.append(f"| `{old}` | `{query}` | {cnt} |")
     if out.warnings:
         lines.append("")
@@ -875,6 +937,8 @@ def run_tag_renamer_subset(
     run_dry: bool,
     csv_files: list[Path],
     json_files: list[Path],
+    scope_query: str = "",
+    on_complete: Callable[[bool], None] | None = None,
 ) -> None:
     """
     Run the tag renamer on a caller-provided subset of Pair rules.
@@ -893,6 +957,8 @@ def run_tag_renamer_subset(
         json_files=json_files,
         show_preflight_prompt=False,   # Tag Updates already confirmed; skip preflight popup
         show_final_summary=False,      # Tag Updates will show its own summary; suppress extra window
+        scope_query=scope_query,
+        on_complete=on_complete,
     )
 
 # Toolbar entrypoint for _Main_Toolbar launcher

@@ -12,6 +12,7 @@ from aqt.qt import (
 
 from .TR_main import run_tag_renamer, load_all_pairs_for_ui_with_sources, run_tag_renamer_subset
 from .add_tags import run_tag_additions, load_tag_add_rules_with_meta, _run_tag_additions_core
+from ..filter_scope_prompt import prompt_scope_filter
 
 
 # Helper for group header cleaning
@@ -424,49 +425,75 @@ def run_tag_updates() -> None:
         QMessageBox.information(mw, "Tag updates", "No rules selected.")
         return
 
+    scope = prompt_scope_filter(mw)
+    if scope is None:
+        return
+    scope_query = str(scope.query or "").strip()
+
     # Map selected indices back to actual rule objects
     selected_pairs = [rename_pairs[i] for i in rename_idx] if rename_pairs else []
     selected_add_rules = [add_rules[i] for i in add_idx] if add_rules else []
 
     # Run tag additions first, then renamer, using the same dry/apply choice
-    rename_ran = False
-
     add_stats = None
     if selected_add_rules:
         # Suppress the standalone "Tag additions" popup; we'll show a combined summary instead
-        add_stats = _run_tag_additions_core(mw, selected_add_rules, dry, show_summary=False)
+        add_stats = _run_tag_additions_core(
+            mw,
+            selected_add_rules,
+            dry,
+            show_summary=False,
+            scope_query=scope_query,
+        )
+
+    def _show_combined_summary(rename_status: str) -> None:
+        # * Combined summary popup for Tag Updates
+        lines: list[str] = []
+        lines.append(f"Tag Updates {'(dry run)' if dry else ''} complete.")
+        if scope_query:
+            lines.append(f"Filter: {scope_query}")
+        lines.append("")
+
+        # Renaming section
+        if rename_status == "ran":
+            lines.append("Tag renaming: rules ran. See the Global Tag Renamer log for details.")
+        elif rename_status == "failed":
+            lines.append("Tag renaming: failed before completion. See the error popup/log for details.")
+        else:
+            lines.append("Tag renaming: no rules selected.")
+
+        lines.append("")
+
+        # Additions section
+        if add_stats is not None:
+            lines.append("Tag additions:")
+            lines.append(f"  · Rules: {add_stats.total_rules}")
+            lines.append(f"  · Notes matched: {add_stats.total_notes_matched}")
+            lines.append(f"  · Notes changed: {add_stats.total_notes_changed}")
+            lines.append(f"  · Tags added: {add_stats.total_tags_added}")
+        elif selected_add_rules:
+            # Fallback: additions were requested, but no stats returned
+            lines.append("Tag additions: rules ran. See the Tag Additions log for details.")
+        else:
+            lines.append("Tag additions: no rules selected.")
+
+        QMessageBox.information(mw, "Tag Updates — Summary", "\n".join(lines))
 
     if selected_pairs:
-        run_tag_renamer_subset(mw, selected_pairs, dry, csv_files, json_files)
-        rename_ran = True
+        def _on_rename_complete(success: bool) -> None:
+            _show_combined_summary("ran" if success else "failed")
 
-    # * Combined summary popup for Tag Updates
-    lines: list[str] = []
-    lines.append(f"Tag Updates {'(dry run)' if dry else ''} complete.")
-    lines.append("")
-
-    # Renaming section
-    if rename_ran:
-        lines.append("Tag renaming: rules ran. See the Global Tag Renamer log for details.")
+        run_tag_renamer_subset(
+            mw,
+            selected_pairs,
+            dry,
+            csv_files,
+            json_files,
+            scope_query=scope_query,
+            on_complete=_on_rename_complete,
+        )
     else:
-        lines.append("Tag renaming: no rules selected.")
-
-    lines.append("")
-
-    # Additions section
-    if add_stats is not None:
-        lines.append("Tag additions:")
-        lines.append(f"  · Rules: {add_stats.total_rules}")
-        lines.append(f"  · Notes matched: {add_stats.total_notes_matched}")
-        lines.append(f"  · Notes changed: {add_stats.total_notes_changed}")
-        lines.append(f"  · Tags added: {add_stats.total_tags_added}")
-    elif selected_add_rules:
-        # Fallback: additions were requested, but no stats returned
-        lines.append("Tag additions: rules ran. See the Tag Additions log for details.")
-    else:
-        lines.append("Tag additions: no rules selected.")
-
-    QMessageBox.information(mw, "Tag Updates — Summary", "\n".join(lines))
+        _show_combined_summary("none")
 
 
 __all__ = ["run_tag_renamer", "run_tag_additions", "run_tag_updates"]

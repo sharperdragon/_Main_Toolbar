@@ -274,6 +274,22 @@ def _append_remove_reporting(
         rm_used = list(report.get("remove_files_used") or [])
         rm_stats = report.get("remove_stats_by_file") or {}
 
+        # ! De-dupe lists (defense-in-depth). Upstream should already de-dupe,
+        #   but the logger should never print duplicates.
+        def _dedupe_keep_order(items: List[Any]) -> List[Any]:
+            seen: set[str] = set()
+            out: List[Any] = []
+            for it in items:
+                s = str(it)
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                out.append(it)
+            return out
+
+        rm_sel = _dedupe_keep_order(rm_sel)
+        rm_used = _dedupe_keep_order(rm_used)
+
         def _is_field_remove(x: Any) -> bool:
             """True if x refers to field_remove_rules.txt (or an equivalent label)."""
             try:
@@ -377,14 +393,6 @@ def _is_remove_rule(per: Dict[str, Any], cfg: Any) -> bool:
     This is used so we can render field-aware query/search previews instead of
     treating remove TXT rules like normal JSON rules in logs.
     """
-    """
-    Decide if this per-rule record came from a TXT-based remove file.
-    This is used so we can render field-aware query/search previews instead of
-    treating remove TXT rules like normal JSON rules in logs.
-    """
-    # Engine-generated per-field deletions from field_remove_rules.txt should be treated as normal rules in logs.
-    if bool(per.get("generated_field_remove")):
-        return False
 
     # Try several possible locations for the originating rule file
     candidates: list[Any] = [
@@ -744,16 +752,6 @@ def write_batch_fr_debug(
         lines.append(
             f"- remove_config.max_loops: {remove_cfg.get('max_loops', getattr(cfg, 'max_loops', 0))}"
         )
-        # Field-remove global cleanup configuration (field_remove_rules.txt)
-        lines.append(
-            f"- remove_config.field_remove_enable: {bool(remove_cfg.get('field_remove_enable', True))}"
-        )
-        fr_fields = remove_cfg.get("field_remove_fields")
-        if isinstance(fr_fields, (list, tuple)):
-            fr_fields_disp = ", ".join(str(f) for f in fr_fields)
-        else:
-            fr_fields_disp = str(fr_fields or "None")
-        lines.append(f"- remove_config.field_remove_fields: {fr_fields_disp}")
         # TXT-based remove-rule files are reported separately from JSON rules.
         # If engine/remove_runner populated remove_* report keys, we include them here.
         _append_remove_reporting(lines, report, rules_root, hide_field_remove=True)
@@ -1145,7 +1143,7 @@ def write_regex_debug(
         lines.append("")
 
         # TXT remove-rule reporting (if present)
-        _append_remove_reporting(lines, report, rules_root)
+        _append_remove_reporting(lines, report, rules_root, hide_field_remove=True)
 
         dry = report.get("dry_run", False)
         lines.append("## Settings")
@@ -1339,6 +1337,13 @@ def _init_report(cfg: RunConfig) -> Dict[str, Any]:
         "remove_files_selected": [],
         "remove_files_used": [],
         "remove_stats_by_file": {},
+        # Field-remove reporting (kept separate so Batch_FR_Debug stays field-remove-free)
+        "field_remove_selected": "",
+        "field_remove_used": "",
+        "field_remove_stats_by_file": {},
+        # Paths returned by remove_runner (split logs)
+        "remove_rules_log_path": "",
+        "field_remove_log_path": "",
     }
 
 

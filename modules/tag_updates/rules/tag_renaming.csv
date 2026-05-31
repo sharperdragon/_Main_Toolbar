@@ -22,10 +22,6 @@ AnkiHub_Optional::allsteptwo,#Zank::AH_Optional::#Yield
 
 AnkiHub_Subdeck, #Zank::AH_subdeck
 
-#Zank::#Step2_v12::#OME_banner::Basic_Science,#Zank::#Step2_v12::#OME::*Basic_Science
-#Zank::#Step2_v12::#OME_banner::Clinical,#Zank::#Step2_v12::#OME::*Clinical
-
-
 #Zank::Step1_v12::#B&B::01_Basic_Pharmacology,#Zank::Step1_v12::#B&B::02_Basic_Pharmacology
 #Zank::Step1_v12::#B&B::02_Behavioral,#Zank::Step1_v12::#B&B::03_Behavioral
 #Zank::Step1_v12::#B&B::03_Biochem,#Zank::Step1_v12::#B&B::04_Biochem

@@ -1,0 +1,100 @@
+#AK_Step2_v12::#OME_banner::Clinical::13_Gynecology::02_Cervical_Cancer, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::01_Gynecology::02_Gynecology_Oncology::02_Cervical_Cancer
+#AK_Step2_v12::#OME_banner::Clinical::13_Gynecology::03_Endometrial_Cancer, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::01_Gynecology::02_Gynecology_Oncology::03_Endometrial_Cancer
+#AK_Step2_v12::#OME_banner::Clinical::13_Gynecology::14_Puberty, #AK_Step2_v12::#OME::Clinical::05_Obstetrics_and_Gynecology::01_Gynecology::03_Reproductive_Endocrinology::01_Puberty
+#AK_Step2_v12::#OME_banner::Clinical::13_Gynecology::16_Secondary_Amenorrhea, #AK_Step2_v12::#OME::Clinical::05_Obstetrics_and_Gynecology::01_Gynecology::03_Reproductive_Endocrinology::03_Secondary_Amenorrhea
+
+#AK_Step2_v12::#OME_banner::Clinical::01_Cardiology::02_Heart_Failure, #AK_Step2_v12::#OME::01_Medicine::01_Cardiology::03_Heart_Failure
+#AK_Step2_v12::#OME_banner::Clinical::01_Cardiology::03_Valvular_Disease, #AK_Step2_v12::#OME::01_Medicine::01_Cardiology::04_Valvular_Disease
+#AK_Step2_v12::#OME_banner::Clinical::01_Cardiology::05_Pericardial_Disease, #AK_Step2_v12::#OME::01_Medicine::01_Cardiology::06_Pericardial_Disease
+#AK_Step2_v12::#OME_banner::Clinical::01_Cardiology::06_Syncope, #AK_Step2_v12::#OME::01_Medicine::01_Cardiology::07_Syncope
+#AK_Step2_v12::#OME_banner::Clinical::01_Cardiology::10_ACLS_Easy, #AK_Step2_v12::#OME::01_Medicine::01_Cardiology::11_ACLS_Easy
+
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::01_Gallbladder, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::01_Gallbladder
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::07_Acute_Diarrhea, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::07_Acute_Diarrhea
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::08_Chronic_Diarrhea, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::08_Chronic_Diarrhea
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::09_Malabsorption, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::09_Malabsorption
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::10_Diverticula, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::10_Diverticula
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::11_Colon_Cancer, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::11_Colon_Cancer
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::12_Cirrhosis, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::12_Cirrhosis_2
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::14_GI_Bleed, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::14_GI_Bleed
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::15_Pancreatitis, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::15_Pancreatitis
+#AK_Step2_v12::#OME_banner::Clinical::03_Gastroenterology::16_IBD, #AK_Step2_v12::#OME::01_Medicine::03_Gastroenterology::16_IBD
+
+#AK_Step2_v12::#OME_banner::Clinical::04_Nephrology::04_Calcium, #AK_Step2_v12::#OME::01_Medicine::04_Nephrology::04_Calcium
+#AK_Step2_v12::#OME_banner::Clinical::04_Nephrology::05_Potassium, #AK_Step2_v12::#OME::01_Medicine::04_Nephrology::05_Potassium
+#AK_Step2_v12::#OME_banner::Clinical::04_Nephrology::06_Kidney_Stones, #AK_Step2_v12::#OME::01_Medicine::04_Nephrology::06_Kidney_Stones
+#AK_Step2_v12::#OME_banner::Clinical::04_Nephrology::08_Acid_Base, #AK_Step2_v12::#OME::01_Medicine::04_Nephrology::07_Cysts_and_Cancer
+
+#AK_Step2_v12::#OME_banner::Clinical::05_Hematology_Oncology::06_Lymphoma, #AK_Step2_v12::#OME::01_Medicine::05_Hematology_Oncology::06_Lymphoma
+
+#AK_Step2_v12::#OME_banner::Clinical::06_Infectious_Disease, #AK_Step2_v12::#OME::01_Medicine::06_Infectious_Disease
+
+#AK_Step2_v12::#OME_banner::Clinical::07_Endocrinology::06_Outpatient_Diabetes, #AK_Step2_v12::#OME::01_Medicine::07_Endocrinology::06_Outpatient_Type_2_Diabetes
+
+#AK_Step2_v12::#OME_banner::Clinical::08_Rheumatology, #AK_Step2_v12::#OME::01_Medicine::08_Rheumatology
+
+#AK_Step2_v12::#OME_banner::Clinical::09_Dermatology, #AK_Step2_v12::#OME::01_Medicine::09_Dermatology
+
+#AK_Step2_v12::#OME_banner::Clinical::10_Neurology, #AK_Step2_v12::#OME::02_Neurology
+
+
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::01_Newborn_Management, #AK_Step2_v12::#OME::03_Pediatrics::01_Newborn_Management
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::03_Failure_to_Pass_Meconium, #AK_Step2_v12::#OME::03_Pediatrics::03_Failure_to_Pass_Meconium
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::04_Baby_Emesis, #AK_Step2_v12::#OME::03_Pediatrics::04_Baby_Emesis
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::07_Well_Child, #AK_Step2_v12::#OME::03_Pediatrics::07_Well_Child
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::08_Vaccinations, #AK_Step2_v12::#OME::03_Pediatrics::08_Vaccinations
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::11_Child_Abuse, #AK_Step2_v12::#OME::03_Pediatrics::11_Child_Abuse
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::17_Upper_Airway, #AK_Step2_v12::#OME::03_Pediatrics::16_Upper_Airway
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::18_Lower_Airway, #AK_Step2_v12::#OME::03_Pediatrics::17_Lower_Airway
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::19_Seizures, #AK_Step2_v12::#OME::03_Pediatrics::18_Seizures
+#AK_Step2_v12::#OME_banner::Clinical::11_Pediatrics::22_Orthopedics, #AK_Step2_v12::#OME::03_Pediatrics::21_Orthopedics
+
+#AK_Step2_v12::#OME_banner::Clinical::12_Psychiatry, #AK_Step2_v12::#OME::04_Psychiatry
+
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::02_Normal_Prenatal_Care, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::01_Preconception::02_Preconception_Counseling_and_Routine_Prenatal_Care::prenatal
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::03_Genetic_Screening, #AK_Step2_v12::#OME::Clinical::05_Obstetrics_and_Gynecology::02_Obstetrics::02_Early_Pregnancy::01_Antenatal_Genetic_Screening
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::04_3rd_Trimester_Labs, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::Removed::04_3rd_Trimester_Labs
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::05_Advanced_Prenatal_Evaluation, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::Removed::05_Advanced_Prenatal_Evaluation
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::06_Medical_Disease, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::01_Preconception::03_Medical_Diseases_and_Teratogens::Disease
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::07_Normal_Labor, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::04_Labor_and_Delivery::01_Normal_Labor_and_Delivery
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::08_Abnormal_Labor, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::04_Labor_and_Delivery::01_Abnormal_Labor
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::10_Eclampsia, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::03_Late_Pregnancy::01_Hypertension_and_the_Eclampsia_Spectrum
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::11_Multiple_Gestations, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::02_Early_Pregnancy::04_Multifetal_Gestations
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::12_Postpartum_Hemorrhage, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::03_Late_Pregnancy::04_Postpartum_Hemorrhage
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::13_Antenatal_Testing, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::02_Early_Pregnancy::01_Antenatal_Genetic_Screening_2
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::14_3rd_Trimester_Bleeding, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::03_Late_Pregnancy::03_Third_Trimester_Vaginal_Bleeding
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::17_Prenatal_Infections_2, #AK_Step2_v12::#OME::Clinical::05_Obstetrics_and_Gynecology::02_Obstetrics::03_Late_Pregnancy::08_Prenatal_Infections+
+#AK_Step2_v12::#OME_banner::Clinical::14_Obstetrics::19_Contraception, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology::02_Obstetrics::01_Preconception::04_Contraception
+
+#AK_Step2_v12::#OME_banner::Clinical::15_Surgery:_General::06_Small_Bowel, #AK_Step2_v12::#OME::06_Surgery::01_General::07_Surgical_Small_Bowel
+#AK_Step2_v12::#OME_banner::Clinical::15_Surgery:_General::09_Colorectal, #AK_Step2_v12::#OME::06_Surgery::01_General::08_Colon_Rectum_and_Anus
+#AK_Step2_v12::#OME_banner::Clinical::15_Surgery:_General::12_Breast_Cancer, #AK_Step2_v12::#OME::06_Surgery::01_General::13_Breast_Cancer
+#AK_Step2_v12::#OME_banner::Clinical::16_Surgery:_Subspecialty
+#AK_Step2_v12::#OME_banner::Clinical::16_Surgery:_Subspecialty::16_Uro_Misc
+#AK_Step2_v12::#OME_banner::Clinical::16_Surgery:_Subspecialty::19_Ortho_Injuries
+
+#AK_Step2_v12::#OME_banner::Clinical::17_Surgery:_Trauma::05_Abdomen, #AK_Step2_v12::#OME::06_Surgery::02_Trauma::05_Abdominal_Trauma
+#AK_Step2_v12::#OME_banner::Clinical::17_Surgery:_Trauma::08_Toxic_Ingestion, #AK_Step2_v12::#OME::06_Surgery::02_Trauma::removed::Toxic_Ingestion
+
+#AK_Step2_v12::#OME_banner::Clinical::18_Epidemiology_and_Stats
+#AK_Step2_v12::#OME_banner::Clinical::18_Epidemiology_and_Stats::02_Screening, #AK_Step2_v12::#OME::07_Epidemiology_Biostatistics::02_Screening
+
+
+
+#AK_Step2_v12::#OME::Clinical
+#AK_Step2_v12::#OME::Clinical::01_Medicine, #AK_Step2_v12::#OME::01_Medicine
+
+#AK_Step2_v12::#OME::Clinical::02_Neurology, #AK_Step2_v12::#OME::02_Neurology
+
+#AK_Step2_v12::#OME::Clinical::03_Pediatrics, #AK_Step2_v12::#OME::03_Pediatrics
+
+
+#AK_Step2_v12::#OME::Clinical::04_Psychiatry, #AK_Step2_v12::#OME::04_Psychiatry
+
+
+#AK_Step2_v12::#OME::Clinical::05_Obstetrics_and_Gynecology, #AK_Step2_v12::#OME::05_Obstetrics_and_Gynecology
+
+
+#AK_Step2_v12::#OME::Clinical::06_Surgery, #AK_Step2_v12::#OME::06_Surgery
+
+#AK_Step2_v12::#OME::Clinical::07_Epidemiology_Biostatistics, #AK_Step2_v12::#OME::07_Epidemiology_Biostatistics

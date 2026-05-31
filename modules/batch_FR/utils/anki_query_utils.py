@@ -4,11 +4,10 @@
 
 This module is intentionally *Anki-search-layer* aware (not Python regex-layer aware).
 
-Key concept:
-- When we embed a regex pattern in an Anki search query via `re:...`, the Anki search parser
-  consumes backslashes first.
-- Therefore, regex backslashes must be doubled (e.g., `\w` becomes `\\w` in the query string)
-  so that the regex engine ultimately receives the intended escapes.
+Important behavior:
+- Keep regex patterns verbatim when composing `re:` clauses.
+- Do NOT double backslashes for regex patterns; over-escaping can make Anki's
+  search parser reject valid rules (for example around `\\{` / `\\}` patterns).
 """
 
 from __future__ import annotations
@@ -34,18 +33,12 @@ def sanitize_clause(s: str) -> str:
 
 
 def escape_for_anki_re(pat: str) -> str:
-    """Escape a Python-regex pattern for use inside an Anki `re:` search clause.
+    """Return a regex pattern for an Anki `re:` search clause.
 
-    Anki's search parser treats backslashes as escape characters *before* the regex engine.
-    To ensure the regex engine receives a single backslash, we must double them here.
-
-    Example:
-        pattern r"\w+" -> query "re:\\w+" (string contains two backslashes)
+    Keep patterns verbatim. Doubling backslashes here causes over-escaped search
+    queries (e.g., `\\{`) and can trigger parse failures in Anki search.
     """
-    if not pat:
-        return pat
-    # Critical: double escapes for the Anki search parser layer
-    return pat.replace("\\", "\\\\")
+    return pat or ""
 
 
 def _as_list(x: Union[str, Sequence[str], None]) -> List[str]:
@@ -72,11 +65,6 @@ def _pattern_of(rule: Rule) -> str:
                 return ps
         return ""
     return str(rule.pattern).strip() if rule.pattern is not None else ""
-
-
-def _looks_already_escaped_for_anki_re(pat: str) -> bool:
-    """Heuristic: if pattern already contains a double backslash sequence, assume already escaped."""
-    return "\\\\" in pat
 
 
 def _split_re_clause(clause: str) -> tuple[Optional[str], Optional[str]]:
@@ -119,8 +107,7 @@ def _normalize_explicit_re_clause(clause: str) -> str:
       - `re:<pat>`
       - `<field>:re:<pat>`
 
-    If it looks already escaped, leave it alone.
-    Otherwise, double backslashes in the pattern portion.
+    Keep the regex pattern portion verbatim; only normalize marker placement.
     """
     c = clause.strip()
     if not c:
@@ -133,16 +120,11 @@ def _normalize_explicit_re_clause(clause: str) -> str:
     if not pat:
         return c
 
-    if _looks_already_escaped_for_anki_re(pat):
-        return c
-
-    escaped = escape_for_anki_re(pat)
-
     if prefix is None:
-        return "re:" + escaped
+        return "re:" + pat
 
     # Preserve prefix verbatim; always rebuild with lowercase `re:`
-    return f"{prefix}:re:{escaped}"
+    return f"{prefix}:re:{pat}"
 
 
 def _quote_clause(s: str) -> str:

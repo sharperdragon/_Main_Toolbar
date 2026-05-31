@@ -1,7 +1,15 @@
 ## 🧠 How It Works
 
 ### 1. Configuration
-Runtime behavior is controlled through `config.json`:
+In the add-on build, runtime behavior is controlled through `modules/modules_config.json`
+using `global_config` + `batch_FR_config`.
+
+Path portability notes (current behavior):
+- No username-specific absolute paths are required.
+- If `batch_FR_config.rules_path` is omitted, the engine defaults to the add-on-local rules folder (`modules/batch_FR/rules`).
+- Relative `rules_path` values are resolved against the directory that contains `modules_config.json`.
+
+Legacy `config.json` example:
 
 ```json
 {

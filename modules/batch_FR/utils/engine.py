@@ -24,7 +24,6 @@ from .remove_runner import (
     extract_remove_stats_by_file,
     maybe_write_remove_debug_for_selection,
     run_remove_for_field,
-    write_remove_debug_md,
 )
 from .rules_io import (
     discover_from_config,
@@ -284,6 +283,12 @@ def _init_report(cfg: RunConfig, *, dry_run: bool) -> Dict[str, Any]:
         "remove_files_selected": [],
         "remove_files_used": [],
         "remove_stats_by_file": {},
+        # Field-remove reporting (kept separate so Batch_FR_Debug stays field-remove-free)
+        "field_remove_selected": "",
+        "field_remove_used": "",
+        "field_remove_stats_by_file": {},
+        "remove_rules_log_path": "",
+        "field_remove_log_path": "",
     }
 
 
@@ -436,6 +441,7 @@ def _run_remove_only_batch(
     dry: bool,
     notes_limit: Optional[int],
     remove_rules: Optional[Union[str, Path, List[Union[str, Path]]]],
+    field_remove_rules: Optional[Union[str, Path]] = None,
 ) -> Any:
     """Execute only the remove pipeline across notes matching `query`.
 
@@ -516,17 +522,34 @@ def _run_remove_only_batch(
             except Exception:
                 continue
 
-            working_candidate, remove_ctx = run_remove_for_field(
-                text=before,
-                field_name=str(field),
-                cfg=cfg,
-                cfg_snapshot=cfg_snapshot,
-                per=per,
-                ctx=remove_ctx,
-                remove_rules=remove_rules,
-                field_remove_rules=None,
-                log_dir=cfg.log_dir,
-            )
+            # ? Pass note_id when supported so remove_runner can compute per-file
+            # ? "notes_matched / notes_would_change" consistently.
+            try:
+                working_candidate, remove_ctx = run_remove_for_field(
+                    text=before,
+                    field_name=str(field),
+                    cfg=cfg,
+                    cfg_snapshot=cfg_snapshot,
+                    per=per,
+                    ctx=remove_ctx,
+                    remove_rules=remove_rules,
+                    field_remove_rules=field_remove_rules,
+                    log_dir=cfg.log_dir,
+                    note_id=int(nid),
+                )
+            except TypeError:
+                # Back-compat: older remove_runner without note_id
+                working_candidate, remove_ctx = run_remove_for_field(
+                    text=before,
+                    field_name=str(field),
+                    cfg=cfg,
+                    cfg_snapshot=cfg_snapshot,
+                    per=per,
+                    ctx=remove_ctx,
+                    remove_rules=remove_rules,
+                    field_remove_rules=field_remove_rules,
+                    log_dir=cfg.log_dir,
+                )
 
             # Apply guards to remove delta only
             working = before
@@ -605,9 +628,11 @@ def _normalize_config_snapshot(config_snapshot: Dict[str, Any]) -> Dict[str, Any
 def _maybe_load_full_modules_config(
     mw_ref: Any, cfg_snapshot: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """If caller passed only batch_FR_config (missing global_config), attempt to load full modules_config.json.
+    """If caller passed only batch_FR_config, optionally backfill missing keys from modules_config.json.
 
-    This prevents UI callsites from accidentally dropping log_dir / ts_format and other global settings.
+    Important:
+    - Caller-provided values always win.
+    - Disk config is used only as a non-destructive fallback for missing keys.
     """
     try:
         if not isinstance(cfg_snapshot, dict):
@@ -617,9 +642,9 @@ def _maybe_load_full_modules_config(
         if "batch_FR_config" in cfg_snapshot or "global_config" in cfg_snapshot:
             return cfg_snapshot
 
-        # Caller likely passed batch_FR_config only; load full file from disk
+        # Caller likely passed batch_FR_config only; optionally load full file from disk
         if mw_ref is None:
-            return cfg_snapshot
+            return dict(cfg_snapshot)
 
         # 1) Primary: use Anki's addons folder (works when mw_ref is the real mw)
         cfg_path = None
@@ -640,15 +665,21 @@ def _maybe_load_full_modules_config(
                 cfg_path = cand2
 
         if cfg_path is None or not cfg_path.exists():
-            return cfg_snapshot
+            return dict(cfg_snapshot)
 
         full = json.loads(cfg_path.read_text(encoding="utf-8"))
         if isinstance(full, dict) and "batch_FR_config" in full:
-            return full
+            # Flatten disk config, then overlay caller snapshot so caller values
+            # are never silently overridden.
+            disk_flat = _normalize_config_snapshot(full)
+            if isinstance(disk_flat, dict):
+                merged = dict(disk_flat)
+                merged.update(dict(cfg_snapshot))
+                return merged
     except Exception:
         pass
 
-    return cfg_snapshot
+    return dict(cfg_snapshot) if isinstance(cfg_snapshot, dict) else {}
 
 
 def _modules_dir_from_engine() -> Path:
@@ -663,6 +694,7 @@ def run_batch_find_replace(
     rulesets: Optional[List[Union[str, Path, Dict[str, Any]]]] = None,
     config_snapshot: Dict[str, Any],
     remove_rules: Optional[Union[str, Path, List[Union[str, Path]]]] = None,
+    field_remove_rules: Optional[Union[str, Path]] = None,
     dry_run: Optional[bool] = None,
     show_progress: bool = True,
     notes_limit: Optional[int] = None,
@@ -675,6 +707,8 @@ def run_batch_find_replace(
     - Keeps legacy semantics for search construction via anki_query_utils.compose_search()
     - Applies text changes via regex_utils.apply_rule_to_text()
     - Leaves remove_runner behavior unchanged (called per-field)
+    - field_remove_rules precedence:
+      explicit function arg > UI-selected field_remove_rules.txt > config fallback
     """
     _ = show_progress  # placeholder (kept for API compatibility)
 
@@ -687,7 +721,8 @@ def run_batch_find_replace(
     if getattr(mw_work, "col", None) is None and mw is not None:
         mw_work = mw
 
-    # * Self-heal: if UI passed only batch_FR_config, reload full modules_config.json
+    # * Self-heal: if caller passed only batch_FR_config, fill missing keys from
+    #   modules_config.json without overriding caller-provided values.
     config_snapshot = _maybe_load_full_modules_config(mw_work, config_snapshot)
 
     # ? IMPORTANT: callers sometimes pass the *raw* modules_config.json shape:
@@ -924,6 +959,22 @@ def run_batch_find_replace(
     # Normalize selected_files so later suffix routing and removals compare the same Path values.
     selected_files = [_resolve_under_rules_root(p) for p in selected_files]
 
+    # Resolve explicit field-remove override (if provided by caller).
+    # Precedence: explicit arg > UI selection > config fallback.
+    explicit_field_remove_path: Optional[Path] = None
+    if field_remove_rules is not None:
+        try:
+            explicit_field_remove_path = _resolve_under_rules_root(
+                _resolve_rule_input_path(field_remove_rules)
+            )
+        except Exception:
+            try:
+                explicit_field_remove_path = _resolve_under_rules_root(
+                    Path(str(field_remove_rules)).expanduser()
+                )
+            except Exception:
+                explicit_field_remove_path = None
+
     # ? UI can pass TXT remove-rule files through `rules_files`.
     # ? - Any *remove_rule(s).txt files are routed into the remove pipeline (supports MANY files).
     # ? - field_remove_rules.txt is NOT treated as a remove_rules file; it is converted into normal per-field rules.
@@ -943,6 +994,20 @@ def run_batch_find_replace(
 
         if name.endswith("remove_rule.txt") or name.endswith("remove_rules.txt"):
             selected_remove_txt.append(p)
+
+    # Field-remove is NOT treated as a generic remove_rules file. Keep it separate.
+    # Precedence: explicit arg > UI-selected field_remove_rules.txt > config fallback (None here).
+    field_remove_path: Optional[Path] = (
+        explicit_field_remove_path
+        if explicit_field_remove_path is not None
+        else (selected_field_remove_txt[0] if selected_field_remove_txt else None)
+    )
+    try:
+        report["field_remove_selected"] = (
+            str(field_remove_path) if field_remove_path else ""
+        )
+    except Exception:
+        report["field_remove_selected"] = ""
 
     # Normalize `remove_rules` into a list, then append ALL selected remove TXT files (deduped, ordered).
     remove_rules_list: List[Union[str, Path]] = []
@@ -977,9 +1042,6 @@ def run_batch_find_replace(
                 rm_sel.extend([str(x) for x in remove_rules])
             else:
                 rm_sel.append(str(remove_rules))
-        if selected_field_remove_txt:
-            rm_sel.extend([str(p) for p in selected_field_remove_txt])
-
         # De-dupe while preserving order
         seen_rm_sel: set[str] = set()
         rm_sel_uniq: List[str] = []
@@ -988,7 +1050,6 @@ def run_batch_find_replace(
                 continue
             seen_rm_sel.add(s)
             rm_sel_uniq.append(s)
-
         report["remove_files_selected"] = rm_sel_uniq
     except Exception:
         report["remove_files_selected"] = []
@@ -1001,91 +1062,7 @@ def run_batch_find_replace(
             if (p not in selected_remove_txt and p not in selected_field_remove_txt)
         ]
 
-    # Convert field_remove_rules.txt into normal per-field delete rules (pattern + query), for ALL fields.
-    # This makes field_remove_rules.txt selectable in the UI without triggering "No JSON rules loaded".
-    def _quote_anki_clause(s: str) -> str:
-        # Wrap in quotes so spaces don't break the query; escape internal quotes.
-        return '"' + s.replace('"', '\\"') + '"'
-
-    if selected_field_remove_txt:
-        try:
-            # Local import avoids import cycles during Anki startup.
-            from .FR_global_utils import load_field_remove_rules  # type: ignore
-        except Exception:
-            load_field_remove_rules = None  # type: ignore
-
-        for fr_path in selected_field_remove_txt:
-            try:
-                if not Path(str(fr_path)).exists():
-                    report["invalid_rules"].append(
-                        {
-                            "source": str(fr_path),
-                            "error": "field_remove_rules.txt not found at resolved path",
-                        }
-                    )
-                    continue
-            except Exception:
-                pass
-            if not load_field_remove_rules:
-                report["invalid_rules"].append(
-                    {
-                        "source": str(fr_path),
-                        "error": "load_field_remove_rules import failed",
-                    }
-                )
-                continue
-
-            try:
-                pats = load_field_remove_rules(fr_path)
-                fields = list(cfg.fields_all or [])
-
-                # Fallback: if fields_all is empty, generate a single ALL-fields rule (query-less).
-                if not fields:
-                    raw_rules.append(
-                        {
-                            "source_file": str(fr_path),
-                            "source_path": str(fr_path),
-                            "source_index": 0,
-                            "_generated_field_remove": True,
-                            "pattern": [getattr(p, "pattern", str(p)) for p in pats],
-                            "flags": "m",
-                            "fields": ["ALL"],
-                            "loop": True,
-                            "regex": True,
-                            "replacement": "",
-                            "query": [],
-                            "exclude": [],
-                        }
-                    )
-                    continue
-
-                # Normal case: one generated delete-rule per (pattern x field)
-                src_i = 0
-                for pat in pats:
-                    pat_str = getattr(pat, "pattern", str(pat))
-                    for field_name in fields:
-                        src_i += 1
-                        clause = f"{field_name}:re:{pat_str}"
-                        raw_rules.append(
-                            {
-                                "source_file": str(fr_path),
-                                "source_path": str(fr_path),
-                                "source_index": src_i,
-                                "_generated_field_remove": True,
-                                "pattern": pat_str,
-                                "flags": "m",
-                                "fields": [str(field_name)],
-                                "loop": True,
-                                "regex": True,
-                                "replacement": "",
-                                "query": [clause],
-                                "exclude": [],
-                            }
-                        )
-            except Exception as e:
-                report["invalid_rules"].append(
-                    {"source": str(fr_path), "error": str(e)}
-                )
+    # (field_remove_rules.txt is NOT converted into generic rules here.)
 
     # Expand any directory selections in rulesets (but keep dict-based rulesets intact).
     _ruleset_dicts: List[Dict[str, Any]] = []
@@ -1144,9 +1121,7 @@ def run_batch_find_replace(
             or r.get("_source_file")
             or ""
         )
-        if src.lower().endswith((".json", ".jsonl")) or bool(
-            r.get("_generated_field_remove")
-        ):
+        if src.lower().endswith((".json", ".jsonl")):
             ready_dicts.append(r)
 
     # Convert to Rule dataclasses
@@ -1172,8 +1147,11 @@ def run_batch_find_replace(
         remove_selected = bool(
             (remove_rules is not None)
             or bool(selected_remove_txt)
-            or bool(selected_field_remove_txt)
+            or bool(field_remove_path)
         )
+
+        # Field-remove selection is already tracked via `field_remove_path` (Path|None)
+        field_remove_selected = bool(field_remove_path)
 
         if remove_selected or q:
             try:
@@ -1186,6 +1164,7 @@ def run_batch_find_replace(
                     dry=dry,
                     notes_limit=notes_limit,
                     remove_rules=remove_rules,
+                    field_remove_rules=field_remove_path,
                 )
 
                 # * Populate remove reporting keys so Batch/Regex logs can reflect remove activity.
@@ -1199,8 +1178,16 @@ def run_batch_find_replace(
                         used_paths, field_used = ([], None)
 
                     rm_used: List[str] = [str(p) for p in (used_paths or [])]
-                    if field_used is not None:
-                        rm_used.append(str(field_used))
+
+                    # Keep field-remove used path separate so Batch_FR_Debug stays clean
+                    try:
+                        report["field_remove_used"] = (
+                            str(field_used)
+                            if field_used is not None
+                            else (str(field_remove_path) if field_remove_path else "")
+                        )
+                    except Exception:
+                        report["field_remove_used"] = ""
 
                     # Include explicit remove_rules inputs as "used" as well.
                     if remove_rules is not None:
@@ -1222,23 +1209,62 @@ def run_batch_find_replace(
                 except Exception:
                     report["remove_files_used"] = []
 
+                # Split stats so field_remove does NOT land in Batch_FR_Debug
                 try:
                     if remove_ctx_early is not None:
-                        report["remove_stats_by_file"] = extract_remove_stats_by_file(
-                            remove_ctx_early
-                        )
+                        _stats_all = extract_remove_stats_by_file(remove_ctx_early)
+                        _stats_generic: Dict[str, Any] = {}
+                        _stats_field: Dict[str, Any] = {}
+                        for k, v in (_stats_all or {}).items():
+                            try:
+                                if (
+                                    Path(str(k)).name.lower()
+                                    == "field_remove_rules.txt"
+                                ):
+                                    _stats_field[k] = v
+                                else:
+                                    _stats_generic[k] = v
+                            except Exception:
+                                _stats_generic[k] = v
+                        report["remove_stats_by_file"] = _stats_generic
+                        report["field_remove_stats_by_file"] = _stats_field
                 except Exception:
                     report["remove_stats_by_file"] = {}
 
-                # ! If we ran remove-only here, we MUST also write Remove_FR_Debug here because
-                #   the normal end-of-run remove debug writer is below and won't execute.
+                # ! If we ran remove-only here, also write the dedicated remove debug logs.
                 try:
                     if remove_ctx_early is not None:
-                        remove_md_early = write_remove_debug_md(
-                            remove_ctx_early, Path(str(cfg.log_dir)).expanduser()
+                        remove_md_early = maybe_write_remove_debug_for_selection(
+                            remove_ctx_early,
+                            selected_files=(report.get("rules_files_in") or [])
+                            + (
+                                [str(x) for x in remove_rules]
+                                if isinstance(remove_rules, list)
+                                else (
+                                    [str(remove_rules)]
+                                    if remove_rules is not None
+                                    else []
+                                )
+                            )
+                            + ([str(field_remove_path)] if field_remove_path else []),
+                            log_dir=Path(str(cfg.log_dir)).expanduser(),
                         )
                         report.setdefault("remove_debug", {})
                         report["remove_debug"]["written_early"] = bool(remove_md_early)
+
+                        # Capture split log paths produced by remove_runner
+                        try:
+                            rc = getattr(remove_ctx_early, "run_ctx", None)
+                            if rc is not None:
+                                report["remove_rules_log_path"] = str(
+                                    getattr(rc, "remove_rules_log_path", "") or ""
+                                )
+                                report["field_remove_log_path"] = str(
+                                    getattr(rc, "field_remove_log_path", "") or ""
+                                )
+                        except Exception:
+                            pass
+
                         if remove_md_early:
                             report.setdefault("report_paths", {})["remove_markdown"] = (
                                 str(remove_md_early)
@@ -1323,18 +1349,39 @@ def run_batch_find_replace(
 
                     # 3) Remove pipeline (unchanged; remove_runner owns its own search/looping)
                     working = before
-                    if cfg.remove_config or (remove_rules is not None):
-                        working_candidate, remove_ctx = run_remove_for_field(
-                            text=before,
-                            field_name=field,
-                            cfg=cfg,
-                            cfg_snapshot=cfg_dict,
-                            per=per,
-                            ctx=remove_ctx,
-                            remove_rules=remove_rules,
-                            field_remove_rules=None,  # remove_runner reads config-driven suffixes
-                            log_dir=cfg.log_dir,
-                        )
+                    if (
+                        cfg.remove_config
+                        or (remove_rules is not None)
+                        or field_remove_path
+                    ):
+                        # ? Pass note_id when supported so remove_runner can compute per-file
+                        # ? "notes_matched / notes_would_change" consistently.
+                        try:
+                            working_candidate, remove_ctx = run_remove_for_field(
+                                text=before,
+                                field_name=field,
+                                cfg=cfg,
+                                cfg_snapshot=cfg_dict,
+                                per=per,
+                                ctx=remove_ctx,
+                                remove_rules=remove_rules,
+                                field_remove_rules=field_remove_path,
+                                log_dir=cfg.log_dir,
+                                note_id=int(nid),
+                            )
+                        except TypeError:
+                            # Back-compat: older remove_runner without note_id
+                            working_candidate, remove_ctx = run_remove_for_field(
+                                text=before,
+                                field_name=field,
+                                cfg=cfg,
+                                cfg_snapshot=cfg_dict,
+                                per=per,
+                                ctx=remove_ctx,
+                                remove_rules=remove_rules,
+                                field_remove_rules=field_remove_path,
+                                log_dir=cfg.log_dir,
+                            )
 
                         # Keep remove loop cap in per for logging (best-effort)
                         try:
@@ -1459,6 +1506,7 @@ def run_batch_find_replace(
                 dry=dry,
                 notes_limit=notes_limit,
                 remove_rules=remove_rules,
+                field_remove_rules=field_remove_path,
             )
             report.setdefault("remove_only_auto", {})
             report["remove_only_auto"]["triggered"] = True
@@ -1475,10 +1523,7 @@ def run_batch_find_replace(
         # If a remove-rule TXT OR a field_remove_rules.txt was selected but the remove pipeline never ran
         # (e.g., 0 notes matched), remove_ctx will still be None. Build it anyway so we can write
         # Remove_FR_Debug for auditing.
-        field_remove_selected = bool(selected_field_remove_txt)
-        field_remove_path = (
-            str(selected_field_remove_txt[0]) if field_remove_selected else None
-        )
+        field_remove_selected = bool(field_remove_path)
         used_snapshot = cfg_dict  # track which cfg snapshot was used to build remove_ctx (debug suppression may change this)
 
         if remove_ctx is None and (remove_rules is not None or field_remove_selected):
@@ -1524,8 +1569,16 @@ def run_batch_find_replace(
                     used_paths, field_used = ([], None)
 
                 rm_used: List[str] = [str(p) for p in (used_paths or [])]
-                if field_used is not None:
-                    rm_used.append(str(field_used))
+
+                # Keep field-remove used path separate so Batch_FR_Debug stays clean
+                try:
+                    report["field_remove_used"] = (
+                        str(field_used)
+                        if field_used is not None
+                        else (str(field_remove_path) if field_remove_path else "")
+                    )
+                except Exception:
+                    report["field_remove_used"] = ""
 
                 # Include explicit remove_rules inputs as "used" as well.
                 if remove_rules is not None:
@@ -1533,10 +1586,6 @@ def run_batch_find_replace(
                         rm_used.extend([str(x) for x in remove_rules])
                     else:
                         rm_used.append(str(remove_rules))
-
-                # If a field_remove_rules.txt was explicitly selected (debug build), include it.
-                if field_remove_path:
-                    rm_used.append(str(field_remove_path))
 
                 # De-dupe while preserving order
                 seen_rm_used: set[str] = set()
@@ -1552,9 +1601,19 @@ def run_batch_find_replace(
                 report["remove_files_used"] = []
 
             try:
-                report["remove_stats_by_file"] = extract_remove_stats_by_file(
-                    remove_ctx
-                )
+                _stats_all = extract_remove_stats_by_file(remove_ctx)
+                _stats_generic: Dict[str, Any] = {}
+                _stats_field: Dict[str, Any] = {}
+                for k, v in (_stats_all or {}).items():
+                    try:
+                        if Path(str(k)).name.lower() == "field_remove_rules.txt":
+                            _stats_field[k] = v
+                        else:
+                            _stats_generic[k] = v
+                    except Exception:
+                        _stats_generic[k] = v
+                report["remove_stats_by_file"] = _stats_generic
+                report["field_remove_stats_by_file"] = _stats_field
             except Exception:
                 report["remove_stats_by_file"] = {}
 
@@ -1573,23 +1632,20 @@ def run_batch_find_replace(
                 else:
                     selected_for_remove_debug.append(str(remove_rules))
 
+            # Include the effective field-remove source when present.
+            if field_remove_path is not None:
+                selected_for_remove_debug.append(str(field_remove_path))
+
             # ! Force-write a dedicated remove log whenever a remove-rule TXT or field_remove_rules.txt was selected.
             #   This avoids silent skips due to selection-trigger logic.
             remove_md = None
             try:
-                # If either remove_rules OR field_remove_rules.txt was explicitly selected, force-write the
-                # dedicated Remove_FR_Debug__*.md.
-                if (remove_rules is not None) or field_remove_selected:
-                    remove_md = write_remove_debug_md(
-                        remove_ctx, Path(str(cfg.log_dir)).expanduser()
-                    )
-                else:
-                    # Otherwise keep the selection-trigger behavior.
-                    remove_md = maybe_write_remove_debug_for_selection(
-                        remove_ctx,
-                        selected_files=selected_for_remove_debug,
-                        log_dir=Path(str(cfg.log_dir)).expanduser(),
-                    )
+                # remove_runner writes separate logs for generic remove rules vs field_remove.
+                remove_md = maybe_write_remove_debug_for_selection(
+                    remove_ctx,
+                    selected_files=selected_for_remove_debug,
+                    log_dir=Path(str(cfg.log_dir)).expanduser(),
+                )
             except Exception as e:
                 report["remove_log_error"] = f"{type(e).__name__}: {e}"
 
@@ -1607,6 +1663,19 @@ def run_batch_find_replace(
             report["remove_debug"]["log_dir"] = str(Path(str(cfg.log_dir)).expanduser())
             report["remove_debug"]["field_remove_rules"] = str(field_remove_path or "")
             report["remove_debug"]["written"] = bool(remove_md)
+
+            # Capture split log paths produced by remove_runner
+            try:
+                rc = getattr(remove_ctx, "run_ctx", None)
+                if rc is not None:
+                    report["remove_rules_log_path"] = str(
+                        getattr(rc, "remove_rules_log_path", "") or ""
+                    )
+                    report["field_remove_log_path"] = str(
+                        getattr(rc, "field_remove_log_path", "") or ""
+                    )
+            except Exception:
+                pass
 
             if remove_md:
                 report.setdefault("report_paths", {})["remove_markdown"] = str(

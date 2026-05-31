@@ -1,7 +1,7 @@
 {
     "toolbar_title": "Custom",
     "enable_toolbar_settings": true,
-    "default_icon": "icons/bent_menu-burger.png",
+    "default_icon": "icons/bent_menu-burger.svg",
     "default_submenu": "",
     "show_disabled_items": false,
 

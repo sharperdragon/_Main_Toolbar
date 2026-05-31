@@ -131,19 +131,14 @@ def load_batch_fr_config(config_path: Path | str | None = None) -> BatchFRConfig
         or "field_remove_rules.txt"
     )
 
+    default_rules_path = Path(RULES_PATH).expanduser().resolve()
+
     # build engine-facing snapshot
     snapshot: BatchFRConfig = {
         "ts_format": ts_fmt,
         "log_dir": str(log_dir_path),
         # * Always store an absolute rules root so downstream discovery never depends on cwd
-        "rules_path": str(
-            rules_path
-            if rules_path
-            else (
-                Path(MODULES_CONFIG_PATH).expanduser().resolve().parent
-                / str(RULES_PATH)
-            ).resolve()
-        ),
+        "rules_path": str(rules_path if rules_path else default_rules_path),
         "fields_all": list(fields_all) if isinstance(fields_all, list) else [],
         "defaults": dict(defaults) if isinstance(defaults, dict) else {},
         "remove_config": remove_cfg,

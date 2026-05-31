@@ -74,6 +74,35 @@ function _removeMarker() {
   }
 }
 
+function _toSvgCandidate(path) {
+  const clean = (path ?? "").toString().trim().replace(/\\/g, "/");
+  if (!clean || clean.endsWith("/")) return "";
+
+  const slash = clean.lastIndexOf("/");
+  const dot = clean.lastIndexOf(".");
+  const hasExt = dot > slash;
+  if (!hasExt) return clean + ".svg";
+
+  const ext = clean.slice(dot).toLowerCase();
+  if (ext === ".svg") return clean;
+  if (ext === ".png") return clean.slice(0, dot) + ".svg";
+  return "";
+}
+
+function normalizeIcon(value) {
+  const raw = (value ?? "").toString().trim().replace(/\\/g, "/");
+  if (!raw) return "";
+
+  if (raw.startsWith(":assets/")) return _toSvgCandidate(raw);
+  if (raw.startsWith(":")) return "";
+  if (raw.startsWith("/")) return _toSvgCandidate(raw);
+
+  const rel = raw.startsWith("assets/") || raw.startsWith("icons/")
+    ? raw
+    : "icons/" + raw;
+  return _toSvgCandidate(rel);
+}
+
 function rowHtml(r, i) {
   const esc = s => (s ?? "").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const isSep = (r.type === "separator") || (r.name === "———");

@@ -14,13 +14,6 @@
         "delete_chars": {"max_chars": 0, "count_spaces": true}
     },
     {
-        "pattern": "<b>(\\w*\\s*\\{\\{[^\\}]+?\\}\\}\\s*-*\\w*)</b>",
-        "replacement": "$1",
-        "loop": true,
-        "fields": ["Text"],
-        "delete_chars": {"max_chars": 0, "count_spaces": true}
-    },
-    {
         "pattern": "(\\{\\{[^\\}]*?)<b>([^\\}]*?\\}\\})",
         "replacement": "$1$2",
         "loop": true,

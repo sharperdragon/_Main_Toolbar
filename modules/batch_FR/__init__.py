@@ -22,6 +22,7 @@ else:
 
 
 from .gui.ui_dialog import prompt_batch_fr_run_options as _prompt_batch_fr_run_options
+from ..filter_scope_prompt import prompt_scope_filter
 from .utils.top_helper import (
     _discover_rule_files,
     _get_rules_root,
@@ -44,10 +45,13 @@ def run_batch_find_replace(
     show_progress: bool = True,
     notes_limit: Optional[int] = None,
     rules_files: Optional[List[Union[str, Path]]] = None,
+    remove_only_query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Public entry point used by host modules.
-    ...
+    `field_remove_rules` is optional and forwarded to the engine.
+    When provided, it overrides UI-selected field-remove files and config fallback.
+    `remove_only_query` can be used as a run-wide note filter query.
     """
     # If no config_path is provided, use the main modules_config.json
     if config_path is None:
@@ -70,11 +74,13 @@ def run_batch_find_replace(
         mw_ref,
         rulesets=rulesets,
         remove_rules=remove_rules,
+        field_remove_rules=field_remove_rules,
         config_snapshot=cfg,  # pass normalized config
         dry_run=dry_run,
         show_progress=show_progress,
         notes_limit=notes_limit,
         rules_files=rules_files,
+        remove_only_query=remove_only_query,
     )
 
 
@@ -124,7 +130,10 @@ def run_from_toolbar() -> None:
 
     dry_run = bool(opts.get("dry_run", True))
     extensive_debug = bool(opts.get("extensive_debug", False))
-    selected_files: List[Path] = opts.get("rules_files", []) or []
+    selected_files_raw = opts.get("rules_files", []) or []
+    selected_files: List[Path] = [
+        Path(str(p)).expanduser() for p in selected_files_raw
+    ]
     # ? If user selected a remove-rule TXT (ends with remove_rule(s).txt), pass it as remove_rules.
     # ? This ensures the engine/remove_runner treats it as removals and can write a dedicated remove log.
     selected_remove_txt: List[Path] = []
@@ -165,6 +174,19 @@ def run_from_toolbar() -> None:
             pass
         return
 
+    # Optional run scope filter (tag / note type). Blank keeps full-scope behavior.
+    scope = prompt_scope_filter(mw)
+    if scope is None:
+        try:
+            from aqt.utils import tooltip  # type: ignore
+
+            tooltip(f"Batch F&R cancelled • {now_stamp()}", period=3000)
+        except Exception:
+            pass
+        return
+
+    scope_query = str(scope.query or "").strip()
+
     report: Dict[str, Any] = {}
     try:
         # * For toolbar runs we don't need extra rulesets; the engine will
@@ -179,11 +201,11 @@ def run_from_toolbar() -> None:
             show_progress=True,
             notes_limit=None,
             rules_files=selected_files,
+            remove_only_query=scope_query,
         )
     except Exception:
         # ! Do not silently swallow errors; write a crash log so the UI never looks like a no-op.
         import traceback
-        from pathlib import Path
 
         tb = traceback.format_exc()
         crash_path = None
@@ -201,6 +223,7 @@ def run_from_toolbar() -> None:
                         f"dry_run={dry_run}",
                         f"extensive_debug={extensive_debug}",
                         f"selected_files_count={len(selected_files)}",
+                        f"scope_query={scope_query!r}",
                         "selected_files (first 20):",
                         *[
                             f"  - {str(p)}"
@@ -303,6 +326,8 @@ def run_from_toolbar() -> None:
                 parts.append(f"across {rules} rule" + ("" if rules == 1 else "s"))
                 if guard_skips:
                     parts.append(f"(guard skips: {guard_skips})")
+                if scope_query:
+                    parts.append(f"[filter: {scope_query}]")
                 msg = " ".join(parts) + f" • {ts}"
             else:
                 # Example: "live: 2 notes changed across 1 rule (guard skips: 1)"
@@ -313,6 +338,8 @@ def run_from_toolbar() -> None:
                 ]
                 if guard_skips:
                     parts.append(f"(guard skips: {guard_skips})")
+                if scope_query:
+                    parts.append(f"[filter: {scope_query}]")
                 msg = " ".join(parts) + f" • {ts}"
 
             tooltip(msg, period=5000)

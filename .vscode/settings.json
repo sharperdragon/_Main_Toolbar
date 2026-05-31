@@ -1,0 +1,6 @@
+{
+ "ruff.configuration": "",
+ "workbench.iconTheme": "material-icon-theme",
+ "workbench.colorTheme": "Dark Modern",
+ "markdown.styles": [".vscode/markdown-preview.css"]
+}

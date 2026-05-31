@@ -27,15 +27,15 @@ _LAST_BASE_STAMP: str | None = None
 _LAST_BASE_COUNT: int = 0
 _NOW_STAMP_LOCK = Lock()
 
-DESKTOP_PATH: Path = Path("/Users/claytongoddard/Desktop")
+# Resolve key directories from this file location so paths are portable across machines.
+# FR_global_utils.py -> utils/ -> batch_FR/ -> modules/ -> add-on root
+_UTILS_DIR: Path = Path(__file__).resolve().parent
+_BATCH_FR_DIR: Path = _UTILS_DIR.parent
+_MODULES_DIR: Path = _BATCH_FR_DIR.parent
 
-# Hard-coded rules path override
-RULES_PATH: Path = Path(
-    "/Users/claytongoddard/Library/Application Support/Anki2/addons21/_Main_Toolbar/modules/batch_FR/rules"
-)
-MODULES_CONFIG_PATH: Path = Path(
-    "/Users/claytongoddard/Library/Application Support/Anki2/addons21/_Main_Toolbar/modules/modules_config.json"
-)
+DESKTOP_PATH: Path = Path.home() / "Desktop"
+RULES_PATH: Path = _BATCH_FR_DIR / "rules"
+MODULES_CONFIG_PATH: Path = _MODULES_DIR / "modules_config.json"
 
 # Path to the global field remove rules file
 FIELD_REMOVE_RULES_PATH: Path = Path(RULES_PATH) / "field_remove_rules.txt"

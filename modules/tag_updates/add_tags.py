@@ -2,14 +2,56 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from time import strftime
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import re
 
 from aqt import mw
 from aqt.qt import QMessageBox
+try:  # pragma: no cover - optional in unit-test stubs
+    from aqt.qt import QApplication, QProgressDialog, Qt
+except Exception:  # pragma: no cover - fallback when Qt symbols are unavailable
+    QApplication = None
+    QProgressDialog = None
+    Qt = None
 from anki.collection import Collection
 from anki.errors import SearchError
+
+try:
+    from ..module_config import (
+        DEFAULT_LOG_DIR,
+        DEFAULT_TS_FORMAT,
+        emit_config_warnings,
+        get_global_config,
+        load_modules_config,
+        resolve_path,
+        validate_modules_config,
+    )
+except Exception:  # pragma: no cover
+    import sys
+
+    _MODULES_DIR = Path(__file__).resolve().parents[1]
+    if str(_MODULES_DIR) not in sys.path:
+        sys.path.insert(0, str(_MODULES_DIR))
+    from module_config import (  # type: ignore
+        DEFAULT_LOG_DIR,
+        DEFAULT_TS_FORMAT,
+        emit_config_warnings,
+        get_global_config,
+        load_modules_config,
+        resolve_path,
+        validate_modules_config,
+    )
+
+try:
+    from ..filter_scope_prompt import prompt_scope_filter
+except Exception:  # pragma: no cover
+    import sys
+
+    _MODULES_DIR = Path(__file__).resolve().parents[1]
+    if str(_MODULES_DIR) not in sys.path:
+        sys.path.insert(0, str(_MODULES_DIR))
+    from filter_scope_prompt import prompt_scope_filter  # type: ignore
 
 # * Paths & constants ---------------------------------------------------------
 
@@ -17,42 +59,36 @@ from anki.errors import SearchError
 BASE_DIR = Path(__file__).resolve().parent
 TAG_ADDITIONS_DIR = BASE_DIR / "tag_additions"
 TAG_ADDITIONS_GLOB = "*_tagging.json"
+DEFAULT_LOAD_ERRORS_FILENAME = "tag_additions_load_errors.txt"
+DEFAULT_SEARCH_ERRORS_FILENAME = "tag_additions_search_errors.txt"
+# How often to refresh the progress UI while processing notes.
+PROGRESS_UPDATE_EVERY_NOTES = 100
 
-# Module/config path helpers
-MODULES_DIR = BASE_DIR.parent
-MODULES_CONFIG_PATH = MODULES_DIR / "modules_config.json"
 
-def _load_modules_config() -> dict:
-    """Load the shared modules_config.json, falling back to simple defaults if missing."""
-    try:
-        import json
-
-        with MODULES_CONFIG_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        # Minimal fallback if config is missing or invalid
-        return {
-            "global_config": {
-                "log_dir": "~/Desktop/anki_logs/Main_toolbar",
-                "ts_format": "%H-%M_%m-%d",
-            }
-        }
+def _load_modules_cfg_with_validation() -> Dict[str, object]:
+    cfg: Dict[str, object] = load_modules_config()
+    emit_config_warnings(validate_modules_config(cfg), cfg)
+    return cfg
 
 
 def _get_global_log_dir() -> Path:
-    """Resolve the global log directory from modules_config.json."""
-    cfg = _load_modules_config()
-    log_dir_str = (
-        cfg.get("global_config", {}).get("log_dir")
-        or "~/Desktop/anki_logs/Main_toolbar"
+    """Resolve global log directory via shared module config helpers."""
+    cfg = _load_modules_cfg_with_validation()
+    global_cfg = get_global_config(cfg)
+    return resolve_path(
+        global_cfg.get("log_dir"),
+        DEFAULT_LOG_DIR,
     )
-    return Path(log_dir_str).expanduser()
 
 
 def _get_ts_format() -> str:
-    """Get the timestamp format from modules_config.json."""
-    cfg = _load_modules_config()
-    return cfg.get("global_config", {}).get("ts_format", "%H-%M_%m-%d")
+    """Resolve global timestamp format via shared module config helpers."""
+    cfg = _load_modules_cfg_with_validation()
+    global_cfg = get_global_config(cfg)
+    ts_value = global_cfg.get("ts_format", DEFAULT_TS_FORMAT)
+    if isinstance(ts_value, str) and ts_value.strip():
+        return ts_value.strip()
+    return DEFAULT_TS_FORMAT
 
 
 @dataclass
@@ -203,7 +239,7 @@ def load_tag_add_rules() -> List[TagAddRule]:
             try:
                 log_dir = _get_global_log_dir()
                 log_dir.mkdir(parents=True, exist_ok=True)
-                marker = log_dir / "tag_additions_load_errors.txt"
+                marker = log_dir / DEFAULT_LOAD_ERRORS_FILENAME
                 with marker.open("a", encoding="utf-8") as fh:
                     fh.write(
                         f"[{strftime(_get_ts_format())}] Failed to load {path} -> {e}\n"
@@ -234,6 +270,46 @@ def _sanitize_search_query(q: str) -> str:
     return re.sub(r"(?<!\\)\\\^", "^", q)
 
 
+def _ui_process_events() -> None:
+    """Keep the UI responsive during long in-thread runs."""
+    if QApplication is None:
+        return
+    try:
+        QApplication.processEvents()
+    except Exception:
+        pass
+
+
+def _set_progress_state(
+    progress_dialog: object | None,
+    *,
+    label: str | None = None,
+    value: int | None = None,
+    maximum: int | None = None,
+) -> None:
+    """Best-effort update for the native progress dialog."""
+    if progress_dialog is None:
+        return
+
+    try:
+        if maximum is not None:
+            progress_dialog.setMaximum(max(1, int(maximum)))
+        if value is not None:
+            v = max(0, int(value))
+            try:
+                cur_max = int(progress_dialog.maximum())
+                v = min(v, max(1, cur_max))
+            except Exception:
+                pass
+            progress_dialog.setValue(v)
+        if label is not None:
+            progress_dialog.setLabelText(label)
+    except Exception:
+        return
+
+    _ui_process_events()
+
+
 def _log_search_error(rule: TagAddRule, query: str, err: Exception) -> None:
     """
     Log a search error for a specific tagging rule to a dedicated log file,
@@ -242,7 +318,7 @@ def _log_search_error(rule: TagAddRule, query: str, err: Exception) -> None:
     try:
         log_dir = _get_global_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "tag_additions_search_errors.txt"
+        log_path = log_dir / DEFAULT_SEARCH_ERRORS_FILENAME
         ts = strftime(_get_ts_format())
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(f"[{ts}] SearchError for rule '{rule.name}' from {rule.source_file}\n")
@@ -276,13 +352,26 @@ def load_tag_add_rules_with_meta() -> Tuple[List[TagAddRule], List[str]]:
 
 # * Core application logic ----------------------------------------------------
 def _apply_rules_to_collection(
-    col: Collection, rules: Sequence[TagAddRule], dry_run: bool
+    col: Collection,
+    rules: Sequence[TagAddRule],
+    dry_run: bool,
+    progress_dialog: object | None = None,
+    scope_query: str = "",
 ) -> RunStats:
     """Core worker: runs inside the GUI thread on the open collection."""
     stats: List[RuleStats] = []
+    total_rules = len(rules)
+    total_notes_seen = 0
+    notes_processed = 0
 
-    for rule in rules:
+    for rule_idx, rule in enumerate(rules, start=1):
         rule_stat = RuleStats(rule=rule)
+        _set_progress_state(
+            progress_dialog,
+            label=f"Tag additions: rule {rule_idx}/{total_rules}\n{rule.name}\nSearching notes…",
+            value=notes_processed,
+            maximum=max(1, total_notes_seen or total_rules),
+        )
 
         # Sanitize the query to avoid invalid escape sequences (like '\^')
         raw_query = _sanitize_search_query(rule.query).strip()
@@ -318,6 +407,9 @@ def _apply_rules_to_collection(
             escaped = re.escape(raw_query)
             query = f"tag:re:^{escaped}(::|$)"
 
+        if scope_query:
+            query = f"{query} {scope_query}".strip()
+
         try:
             note_ids = col.find_notes(query)
         except SearchError as e:
@@ -327,23 +419,54 @@ def _apply_rules_to_collection(
             continue
 
         rule_stat.notes_matched = len(note_ids)
+        total_notes_seen += len(note_ids)
+        _set_progress_state(
+            progress_dialog,
+            label=(
+                f"Tag additions: rule {rule_idx}/{total_rules}\n{rule.name}\n"
+                f"Processing notes: 0/{len(note_ids)}"
+            ),
+            value=notes_processed,
+            maximum=max(1, total_notes_seen),
+        )
 
-        for nid in note_ids:
+        for note_pos, nid in enumerate(note_ids, start=1):
             note = col.get_note(nid)
             # Compute which tags are actually missing
             missing = [t for t in rule.add_tags if t not in note.tags]
-            if not missing:
-                continue
+            if missing:
+                rule_stat.notes_changed += 1
+                rule_stat.tags_added += len(missing)
 
-            rule_stat.notes_changed += 1
-            rule_stat.tags_added += len(missing)
+                if not dry_run:
+                    for t in missing:
+                        note.add_tag(t)
+                    col.update_note(note)
 
-            if dry_run:
-                continue
+            notes_processed += 1
+            if (
+                note_pos == len(note_ids)
+                or note_pos == 1
+                or note_pos % PROGRESS_UPDATE_EVERY_NOTES == 0
+            ):
+                _set_progress_state(
+                    progress_dialog,
+                    label=(
+                        f"Tag additions: rule {rule_idx}/{total_rules}\n{rule.name}\n"
+                        f"Processing notes: {note_pos}/{len(note_ids)}"
+                    ),
+                    value=notes_processed,
+                    maximum=max(1, total_notes_seen),
+                )
 
-            for t in missing:
-                note.add_tag(t)
-            col.update_note(note)
+        # Keep progress moving even when dry-run or no note changes occurred.
+        if not note_ids:
+            _set_progress_state(
+                progress_dialog,
+                label=f"Tag additions: rule {rule_idx}/{total_rules}\n{rule.name}\nNo matching notes.",
+                value=notes_processed,
+                maximum=max(1, total_notes_seen or total_rules),
+            )
 
         stats.append(rule_stat)
 
@@ -353,7 +476,7 @@ def _apply_rules_to_collection(
 # * Logging -------------------------------------------------------------------
 
 
-def _write_log(stats: RunStats) -> Optional[Path]:
+def _write_log(stats: RunStats, scope_query: str = "") -> Optional[Path]:
     """Write a Markdown summary of what happened to the Desktop."""
     if not stats.rules:
         return None
@@ -371,6 +494,8 @@ def _write_log(stats: RunStats) -> Optional[Path]:
     lines.append(f"- notes matched: **{stats.total_notes_matched}**")
     lines.append(f"- notes changed: **{stats.total_notes_changed}**")
     lines.append(f"- tags added: **{stats.total_tags_added}**")
+    if scope_query:
+        lines.append(f"- scope_query: `{scope_query}`")
     lines.append("")
     lines.append(
         "| # | rule | query | add_tags | notes_matched | notes_changed | tags_added |"
@@ -407,6 +532,7 @@ def _run_tag_additions_core(
     rules: Sequence[TagAddRule],
     dry: bool,
     show_summary: bool = True,
+    scope_query: str = "",
 ) -> Optional[RunStats]:
     """
     Core UI+logic runner.
@@ -422,6 +548,8 @@ def _run_tag_additions_core(
         show_summary: If True, show the per-run “Tag additions” popup.
                       Callers like Tag Updates that want to provide their own
                       combined summary can pass False to suppress this window.
+        scope_query: Optional Anki Browser query appended to each rule query
+                     (for example a tag or note-type filter).
 
     Returns:
         A RunStats object summarizing what happened, or None if the run was
@@ -447,8 +575,49 @@ def _run_tag_additions_core(
         return None
 
     col: Collection = mw.col
-    stats = _apply_rules_to_collection(col, rules, dry_run=dry)
-    log_path = _write_log(stats)
+    progress_dialog = None
+    if QProgressDialog is not None:
+        try:
+            progress_dialog = QProgressDialog("Preparing tag additions…", "", 0, 1, parent)
+            progress_dialog.setWindowTitle("Tag additions")
+            progress_dialog.setAutoClose(False)
+            progress_dialog.setAutoReset(False)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.setCancelButton(None)
+            if Qt is not None:
+                progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            progress_dialog.show()
+            _ui_process_events()
+        except Exception:
+            progress_dialog = None
+
+    try:
+        stats = _apply_rules_to_collection(
+            col,
+            rules,
+            dry_run=dry,
+            progress_dialog=progress_dialog,
+            scope_query=str(scope_query or "").strip(),
+        )
+    finally:
+        if progress_dialog is not None:
+            try:
+                final_max = max(1, int(progress_dialog.maximum()))
+            except Exception:
+                final_max = 1
+            _set_progress_state(
+                progress_dialog,
+                label="Tag additions: finalizing…",
+                value=final_max,
+                maximum=final_max,
+            )
+            try:
+                progress_dialog.close()
+            except Exception:
+                pass
+
+    scope_query_norm = str(scope_query or "").strip()
+    log_path = _write_log(stats, scope_query=scope_query_norm)
 
     # * Short summary shown after each run
     msg_lines = [
@@ -459,6 +628,8 @@ def _run_tag_additions_core(
         f"Notes changed: {stats.total_notes_changed}",
         f"Tags added: {stats.total_tags_added}",
     ]
+    if scope_query_norm:
+        msg_lines.insert(2, f"Filter: {scope_query_norm}")
     if log_path is not None:
         msg_lines.append("")
         msg_lines.append(f"Log written to:\n{log_path}")
@@ -537,4 +708,13 @@ def run_tag_additions(parent=None) -> None:
         # cancelled
         return
 
-    _run_tag_additions_core(parent, rules, dry)
+    scope = prompt_scope_filter(parent)
+    if scope is None:
+        return
+
+    _run_tag_additions_core(
+        parent,
+        rules,
+        dry,
+        scope_query=str(scope.query or "").strip(),
+    )

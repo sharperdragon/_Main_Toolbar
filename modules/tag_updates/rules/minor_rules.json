@@ -16,5 +16,13 @@
         "Step1_v12::(?:\\^)*Other::\\^HighYield::(3-HighYield-temporary)"
     ],
     "replacement": "**HighYield_Step-1::$1"
+},
+{
+    "pattern":[
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(1-HighYield)",
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(2-RelativelyHighYield)",
+        "Step1_v12::(?:\\^)*Other::\\^HighYield::(3-HighYield-temporary)"
+    ],
+    "replacement": "**HighYield_Step-1::$1"
 }
 ]

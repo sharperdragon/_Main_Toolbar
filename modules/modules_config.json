@@ -3,6 +3,29 @@
     "log_dir": "~/Desktop/anki_logs/Main_toolbar",
     "ts_format": "%H-%M_%m-%d"
   },
+  "missing_media_config": {
+    "tag_filter_enabled": true,
+    "tag_name": "missing-media",
+    "media_extensions": [".png", ".jpg", ".jpeg", ".svg", ".gif", ".mp3", ".mp4"],
+    "output_dir": "~/Desktop/Missing Media files",
+    "backup_dir": "~/ANki/Missing Media/backup"
+  },
+  "unused_media_config": {
+    "default_output_dir": "~/Desktop",
+    "filename_prefix": "unused_anki_media",
+    "chunk_size": 30
+  },
+  "img_dupes_config": {
+    "fields": ["Text", "Extra", "Extra2", "Extra3", "Extra4", "Extra5", "Button", "Display"],
+    "backup_threshold": 45,
+    "backup_path": "~/ANki/Missing Media/backups/dupe_img_nids.txt"
+  },
+  "log_cleanup_config": {
+    "logs_root": "~/Desktop/anki_logs/Main_toolbar",
+    "allowed_suffixes": [".log", ".txt", ".md"],
+    "safe_root_marker": "anki_logs",
+    "keep_runs": 2
+  },
   "batch_FR_config": {
     "rules_path": "batch_FR/rules",
     "remove_rules_suffix": "_remove_rules.txt",

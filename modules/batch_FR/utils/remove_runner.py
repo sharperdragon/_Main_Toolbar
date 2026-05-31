@@ -683,8 +683,8 @@ def extract_remove_stats_by_file(ctx: RemoveContext) -> Dict[str, Dict[str, int]
       - total_subs: total substitutions/deletions applied
 
     Notes:
-    - Generic TXT remove rules (ctx.remove_ruleset) do not currently track notes_matched
-      reliably; we only report rules + total_subs.
+    - Generic TXT remove rules (ctx.remove_ruleset) track notes_matched via best-effort
+      note_id attribution when engine passes note_id into run_remove_for_field().
     - Field-remove stats (ctx.run_ctx.field_rules_stats) *do* track notes_matched/subs.
     """
     out: Dict[str, Dict[str, int]] = {}
@@ -720,6 +720,26 @@ def extract_remove_stats_by_file(ctx: RemoveContext) -> Dict[str, Dict[str, int]
             st = _ensure(key)
             st["rules"] += 1
             st["total_subs"] += _as_int(rr.get("_applied_subs"))
+    except Exception:
+        pass
+
+    # 1b) Generic TXT remove: best-effort notes_matched via note-hit attribution (if available)
+    try:
+        run_ctx = getattr(ctx, "run_ctx", None)
+        hits_map = getattr(run_ctx, "remove_note_hits_by_file", {}) if run_ctx else {}
+        if isinstance(hits_map, dict) and hits_map:
+            for key, hitset in hits_map.items():
+                try:
+                    k = str(key)
+                    st = _ensure(k)
+                    n = len(hitset) if hitset is not None else 0
+                    # Use max() so we don't clobber non-zero values if another pipeline sets them.
+                    st["notes_matched"] = max(st.get("notes_matched", 0), int(n))
+                    st["notes_would_change"] = max(
+                        st.get("notes_would_change", 0), int(n)
+                    )
+                except Exception:
+                    continue
     except Exception:
         pass
 
@@ -793,17 +813,32 @@ def maybe_write_remove_debug_for_selection(
     # * Capture remove selection + resolved remove files for engine/logger reporting.
     #   These are stored on run_ctx for backward-compatible access even if the dataclass
     #   doesn't define these fields.
+    #
+    # ! De-dupe while preserving order so the debug log doesn't show the same file twice
+    #   (UI selection lists can contain duplicates).
+    def _dedupe_keep_order(items: List[str]) -> List[str]:
+        seen: set[str] = set()
+        out: List[str] = []
+        for it in items:
+            s = str(it)
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
     try:
-        ctx.run_ctx.remove_files_selected = [
+        selected_list = [
             str(f) for f in (selected_files or []) if is_remove_rule_filename(f)
         ]
+        ctx.run_ctx.remove_files_selected = _dedupe_keep_order(selected_list)
     except Exception:
         ctx.run_ctx.remove_files_selected = []
 
     try:
         rm_used, field_used = resolve_remove_paths_from_config(ctx.run_ctx.cfg_snapshot)
         used_list: List[str] = [str(p) for p in (rm_used or [])]
-        ctx.run_ctx.remove_files_used = used_list
+        ctx.run_ctx.remove_files_used = _dedupe_keep_order(used_list)
 
         # Store field-remove used path separately (optional; used by Field_Remove_Debug)
         try:
@@ -871,6 +906,7 @@ def run_remove_for_field(
     remove_rules: RemoveRulesArg = None,
     field_remove_rules: Optional[Union[str, Path]] = None,
     log_dir: Optional[Union[str, Path]] = None,
+    note_id: Optional[int] = None,
 ) -> tuple[str, RemoveContext]:
     # Build context on first use if not provided
     if ctx is None:
@@ -881,12 +917,12 @@ def run_remove_for_field(
             field_remove_rules=field_remove_rules,
         )
 
-    # Apply the existing pipeline to this field
     new_text = apply_remove_pipeline_to_field(
         text=text,
         field_name=field_name,
         ctx=ctx,
         per=per,
+        note_id=note_id,
     )
 
     return new_text, ctx
@@ -900,8 +936,19 @@ def apply_remove_pipeline_to_field(
     field_name: Optional[str],
     ctx: RemoveContext,
     per: Dict[str, Any],
+    note_id: Optional[int] = None,
 ) -> str:
     working = text
+
+    # ! Track which notes were affected per remove source file so engine/logger can
+    #   compute per-file notes_matched/notes_would_change (generic TXT remove rules).
+    #   Stored on run_ctx dynamically to avoid dataclass churn.
+    try:
+        if note_id is not None and ctx.run_ctx is not None:
+            if not hasattr(ctx.run_ctx, "remove_note_hits_by_file"):
+                ctx.run_ctx.remove_note_hits_by_file = {}
+    except Exception:
+        pass
 
     # 1) Generic remove ruleset (pattern/replacement), always looping up to remove_max_loops.
     #    We keep generic behavior here but do not currently log these into the dedicated
@@ -1000,6 +1047,29 @@ def apply_remove_pipeline_to_field(
 
         if total_subs:
             per["remove_field_subs"] = per.get("remove_field_subs", 0) + total_subs
+
+            # ! Attribute this note to the rule's source file for per-file note counts.
+            #   Key must match extract_remove_stats_by_file()'s source resolution.
+            try:
+                if note_id is not None and ctx.run_ctx is not None:
+                    src = rr.get("source_path") or rr.get("_source_path")
+                    if not src:
+                        src = (
+                            rr.get("source_file")
+                            or rr.get("_source_file")
+                            or "unknown_source"
+                        )
+                    key = str(src)
+
+                    hits_map = getattr(ctx.run_ctx, "remove_note_hits_by_file", None)
+                    if isinstance(hits_map, dict):
+                        hitset = hits_map.get(key)
+                        if hitset is None:
+                            hitset = set()
+                            hits_map[key] = hitset
+                        hitset.add(int(note_id))
+            except Exception:
+                pass
 
         # Loop accounting: track both SUM and MAX so "cap=10" doesn't look violated.
         per["remove_loops_used_sum"] = per.get("remove_loops_used_sum", 0) + loops_used
