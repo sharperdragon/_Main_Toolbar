@@ -14,13 +14,14 @@ from aqt.operations import CollectionOp, QueryOp
 from anki.collection import OpChanges
 
 from .tag_rename_utils import (
-    Pair, Preflight, Outcome, RegexRuleDebug, ExecResult,
+    Pair, Preflight, Outcome, RenameRuleResult, RegexRuleDebug, ExecResult,
     _discover_rule_files, _load_pairs_from_csv, _load_pairs_from_json,
     _norm_tag, _normalize_pairs, _resolve_chains,
     _compute_prefixes, _first_segment, _looks_literal_segment, _sanitize_parent_only,
     _rename_tag_token,
     has_left_path_capture, inject_left_path_capture,
     build_substring_pairs_from_prefixes, compress_parent_ops,
+    escape_anki_tag_re,
 )
 
 
@@ -116,6 +117,64 @@ try:
                                  lo=1, hi=100000)
 except Exception:
     pass
+
+
+def _rename_phase(p: Pair) -> int:
+    """Return the execution phase for a rename pair."""
+    old = _norm_tag(getattr(p, "old", ""))
+    new = _norm_tag(getattr(p, "new", ""))
+
+    broad_parent_renames = {
+        "#AK_Step1_v12": "#Zank__Step1_v12",
+        "#AK_Step2_v12": "#Zank::#Step2_v12",
+        "#AK_Step3_v12": "#Zank::Step3_v12",
+        "#AK_Other": "#Zank::Other",
+        "AnkiHub_Optional": "#Zank::AH_Optional",
+        "#PANCE": "#Zank::PANCE",
+    }
+    if broad_parent_renames.get(old) == new:
+        return 10
+
+    if (
+        old.startswith("#AK_Other::Card_Features")
+        or old.startswith("#AK_Other::!AK_UpdateTags")
+        or new.startswith("#Zank::#Useful")
+    ):
+        return 20
+
+    if (
+        old.startswith("#Zank__Step1_v12::#FirstAid")
+        or old.startswith("#Zank::Step1_v12::#B&B")
+    ):
+        return 30
+
+    if "_and_" in old and "_&_" in new:
+        return 40
+
+    return 25
+
+
+def _phase_sort_key(p: Pair) -> tuple[int, int, str, str]:
+    phase = _rename_phase(p)
+    depth = p.old.count("::")
+    # Broad namespace moves run shallow-to-deep; targeted cleanup runs deep-to-shallow.
+    depth_key = depth if phase == 10 else -depth
+    return (phase, depth_key, p.old, p.new)
+
+
+def _sort_pairs_for_execution(pairs: Sequence[Pair]) -> List[Pair]:
+    return sorted(pairs, key=_phase_sort_key)
+
+
+def _compress_pairs_by_phase(pairs: Sequence[Pair]) -> List[Pair]:
+    by_phase: Dict[int, List[Pair]] = {}
+    for p in pairs:
+        by_phase.setdefault(_rename_phase(p), []).append(p)
+
+    out: List[Pair] = []
+    for phase in sorted(by_phase):
+        out.extend(compress_parent_ops(by_phase[phase]))
+    return _sort_pairs_for_execution(out)
 
 
 
@@ -420,8 +479,8 @@ def _run_tag_renamer_core(
         # Collapse cascades so A→B and B→C becomes A→C before executing
         pairs_for_exec, _cycles_ignored = _resolve_chains(pf.valid_pairs)
         n_pairs = len(pairs_for_exec)
-        # Sort so deeper tags (more "::") are renamed first
-        pairs_for_exec.sort(key=lambda p: p.old.count("::"), reverse=True)
+        # Run broad namespace moves, targeted cleanup, then cosmetic substitutions.
+        pairs_for_exec = _sort_pairs_for_execution(pairs_for_exec)
 
         # * Optional preflight confirmation popup
         if show_preflight_prompt:
@@ -477,15 +536,24 @@ def _run_tag_renamer_core(
                 json_files,
                 scope_query=scope_query_norm,
             )
+            search_errors = sum(1 for r in out.applied if r.search_status == "error")
+            search_ok = len(out.applied) - search_errors
             summary = (
-                f"Pairs applied: {len(out.applied)}\n"
+                f"Pairs evaluated: {len(out.applied)}\n"
+                f"Search OK: {search_ok}\n"
+                f"Search errors: {search_errors}\n"
                 f"Pairs skipped: {len(out.skipped)}\n"
                 f"Total notes changed: {out.total_notes_changed}"
             )
             if scope_query_norm:
                 summary = f"Filter: {scope_query_norm}\n\n{summary}"
             # If nothing actually changed, add a brief hint so the user understands why.
-            if out.total_notes_changed == 0 and out.applied:
+            if search_errors:
+                summary += (
+                    "\n\nAt least one Anki search failed.\n"
+                    "Those rules were not counted as clean 0-match results."
+                )
+            elif out.total_notes_changed == 0 and out.applied:
                 summary += (
                     "\n\nNo notes were changed.\n"
                     "This usually means none of the 'old' tags from your rules\n"
@@ -564,9 +632,20 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
             #   Your previous debug showed regex + fullmatch over ~50k prefixes is slow.
             #   If the user intends a plain substring swap, do it without regex.
             if p.old == "_and_" and p.new == "_&_":
+                scoped_prefixes = [
+                    pref for pref in prefixes
+                    if (
+                        "_and_" in pref
+                        and (
+                            pref.startswith("#AK_")
+                            or pref.startswith("#Zank")
+                            or pref.startswith("AnkiHub_Optional")
+                        )
+                    )
+                ]
                 # Build all old->new parent pairs using a literal substring swap (fast).
                 expanded_pairs = build_substring_pairs_from_prefixes(
-                    prefixes,
+                    scoped_prefixes,
                     old_sub="_and_",
                     new_sub="_&_",
                     src=p.src,
@@ -584,13 +663,14 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
                 # Emit debug entry similar to regex rules
                 meta: List[Tuple[str, str]] = []
                 meta.append(("fast-path", "literal substring replace"))
+                meta.append(("restricted-to", "^(#AK_|#Zank|AnkiHub_Optional).*_and_"))
                 meta.append(("expanded", str(len(expanded_pairs))))
                 meta.append(("compressed", str(len(compressed_pairs))))
 
                 regex_debug.append(RegexRuleDebug(
                     pattern=p.old, replacement=p.new, scope="path",
                     compile_ok=True, compile_error=None, pool="prefixes",
-                    pool_size=len(prefixes), matched_count=len(expanded_pairs),
+                    pool_size=len(scoped_prefixes), matched_count=len(expanded_pairs),
                     examples=(meta + examples), truncated=False,
                     orig_pattern=p.old, orig_replacement=p.new,
                     normalized=False,
@@ -670,7 +750,7 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
     # * Final compression: avoid renaming child tags when a parent rename already exists.
     #   This keeps huge expansions from bogging down execution.
     try:
-        valid = compress_parent_ops(valid)
+        valid = _compress_pairs_by_phase(valid)
     except Exception:
         # Best-effort only; never block preflight on compression.
         pass
@@ -688,19 +768,45 @@ def _preflight(col, pairs: Sequence[Pair], allow_regex: bool) -> Preflight:
     )
 
 
-def _build_tag_regex_query(tag: str) -> str:
+def _tag_regex_pattern_for_tag(tag: str) -> str:
     """
-    Build a safe tag:re: query for Anki that matches either the exact tag
-    or any child under that parent tag. Escapes regex metacharacters and colons
-    so Anki's search parser does not treat ':' as a keyword separator.
+    Build the raw regex used to match either the exact tag or any child under
+    that parent tag. This is the Python/regex layer, before Anki search escaping.
     """
     base = re.escape(tag)
-    # Escape colons for Anki's search language (they are not escaped by re.escape)
-    base = base.replace(":", r"\:")
-    # Match exact tag or any child (prefix::child)
-    suffix = r"(\:\:|$)"
-    pattern = f"^{base}{suffix}"
-    return f"tag:re:{pattern}"
+    return f"^{base}(::|$)"
+
+
+def _build_tag_regex_query(tag: str) -> str:
+    """
+    Build a safe tag:re: query for Anki. Literal colons are escaped for Anki's
+    outer search parser while regex syntax remains intact.
+    """
+    return f"tag:re:{escape_anki_tag_re(_tag_regex_pattern_for_tag(tag))}"
+
+
+def _search_result(
+    p: Pair,
+    *,
+    raw_regex: str,
+    anki_query: str,
+    search_status: Literal["ok", "error"],
+    matched_notes: int | None,
+    notes_changed: int,
+    mode: str,
+    error_message: str | None = None,
+) -> RenameRuleResult:
+    return RenameRuleResult(
+        old=p.old,
+        new=p.new,
+        raw_regex=raw_regex,
+        anki_query=anki_query,
+        search_status=search_status,
+        matched_notes=matched_notes,
+        notes_changed=notes_changed,
+        mode=mode,
+        error_message=error_message,
+    )
 
 
 def _execute(
@@ -709,7 +815,7 @@ def _execute(
     dry_run: bool,
     scope_query: str = "",
 ) -> Outcome:
-    applied: List[Tuple[str, str, int, str]] = []
+    applied: List[RenameRuleResult] = []
     skipped: List[Tuple[str, str, str]] = []
     warnings: List[str] = []
     total_changed = 0
@@ -718,16 +824,35 @@ def _execute(
     if dry_run:
         for p in pairs:
             # Estimate impacted notes cheaply
+            raw_regex = _tag_regex_pattern_for_tag(p.old)
+            query = _build_tag_regex_query(p.old)
+            if scope_query_norm:
+                query = f"{query} {scope_query_norm}".strip()
             try:
-                query = _build_tag_regex_query(p.old)
-                if scope_query_norm:
-                    query = f"{query} {scope_query_norm}".strip()
                 count = len(col.find_notes(query))
             except Exception as e:
-                # ! If count fails, keep going but log a warning
-                warnings.append(f'dry-run count failed for "{p.old}"→"{p.new}": {e!s}')
-                count = 0
-            applied.append((p.old, p.new, count, "dry-run"))
+                err = str(e)
+                warnings.append(f'dry-run search failed for "{p.old}"→"{p.new}": {err}')
+                applied.append(_search_result(
+                    p,
+                    raw_regex=raw_regex,
+                    anki_query=query,
+                    search_status="error",
+                    matched_notes=None,
+                    notes_changed=0,
+                    mode="dry-run",
+                    error_message=err,
+                ))
+                continue
+            applied.append(_search_result(
+                p,
+                raw_regex=raw_regex,
+                anki_query=query,
+                search_status="ok",
+                matched_notes=count,
+                notes_changed=0,
+                mode="dry-run",
+            ))
         return Outcome(applied=applied, skipped=skipped, warnings=warnings, total_notes_changed=0)
 
     # Try fast, global rename via TagManager if available; otherwise fallback.
@@ -737,6 +862,41 @@ def _execute(
     for p in pairs:
         notes_changed = 0
         fast_used = False
+        raw_regex = _tag_regex_pattern_for_tag(p.old)
+        query = _build_tag_regex_query(p.old)
+        if scope_query_norm:
+            query = f"{query} {scope_query_norm}".strip()
+
+        try:
+            nids = col.find_notes(query)
+        except Exception as e:
+            err = str(e)
+            warnings.append(f'search failed for "{p.old}"→"{p.new}": {err}')
+            applied.append(_search_result(
+                p,
+                raw_regex=raw_regex,
+                anki_query=query,
+                search_status="error",
+                matched_notes=None,
+                notes_changed=0,
+                mode="search-error",
+                error_message=err,
+            ))
+            continue
+
+        matched_count = len(nids)
+        if not nids:
+            skipped.append((p.old, p.new, "no notes found"))
+            applied.append(_search_result(
+                p,
+                raw_regex=raw_regex,
+                anki_query=query,
+                search_status="ok",
+                matched_notes=0,
+                notes_changed=0,
+                mode="no-notes",
+            ))
+            continue
 
         # * Fast path: use TagManager.rename if available.
         # ! Scope-filtered runs must stay per-note to avoid global tag table renames.
@@ -751,36 +911,21 @@ def _execute(
                 warnings.append(f'Fast path rename failed for "{p.old}"→"{p.new}": {e!s}')
 
         if fast_used:
-            # * Rename succeeded; best-effort count on the NEW tag.
-            #   If counting fails, we STILL treat this pair as applied.
-            try:
-                query = _build_tag_regex_query(p.new)
-                if scope_query_norm:
-                    query = f"{query} {scope_query_norm}".strip()
-                notes_changed = len(col.find_notes(query))
-            except Exception as e:
-                warnings.append(f'Fast path count failed for "{p.old}"→"{p.new}": {e!s}')
-                notes_changed = 0
-
-            applied.append((p.old, p.new, notes_changed, "fast"))
+            notes_changed = matched_count
+            applied.append(_search_result(
+                p,
+                raw_regex=raw_regex,
+                anki_query=query,
+                search_status="ok",
+                matched_notes=matched_count,
+                notes_changed=notes_changed,
+                mode="fast",
+            ))
             total_changed += notes_changed
             # Skip fallback entirely; tags are already renamed
             continue
 
         # Fallback: chunked per-note updates (still global scope)
-        try:
-            query = _build_tag_regex_query(p.old)
-            if scope_query_norm:
-                query = f"{query} {scope_query_norm}".strip()
-            nids = col.find_notes(query)
-        except Exception as e:
-            skipped.append((p.old, p.new, f"search failed: {e!s}"))
-            continue
-
-        if not nids:
-            skipped.append((p.old, p.new, "no notes found"))
-            continue
-
         # Process in chunks (reduces index churn)
         for i in range(0, len(nids), BATCH_COMMIT_SIZE):
             chunk = nids[i : i + BATCH_COMMIT_SIZE]
@@ -797,7 +942,15 @@ def _execute(
                     col.update_note(note)
                     notes_changed += 1
 
-        applied.append((p.old, p.new, notes_changed, "fallback"))
+        applied.append(_search_result(
+            p,
+            raw_regex=raw_regex,
+            anki_query=query,
+            search_status="ok",
+            matched_notes=matched_count,
+            notes_changed=notes_changed,
+            mode="fallback",
+        ))
         total_changed += notes_changed
 
     # Attempt a tidy pass to clear unused tag rows (best-effort)
@@ -824,6 +977,9 @@ def _write_report(
     LOG_PATH.mkdir(parents=True, exist_ok=True)
     stamp = strftime(TS_FORMAT)
     path = LOG_PATH / f"Global_Tag_Renamer_{stamp}.md"
+
+    def _md_cell(value: object) -> str:
+        return str(value if value is not None else "").replace("\n", "<br>").replace("|", "\\|")
 
     lines: List[str] = []
     lines.append(f"# Global Tag Renamer — {stamp}\n")
@@ -884,28 +1040,42 @@ def _write_report(
         lines.append("### Cycles Blocked")
         for a, b in pf.cycles_blocked:
             lines.append(f"- `{a}` ↔ `{b}`")
-        lines.append("")
+    lines.append("")
     lines.append("## Outcome\n")
-    lines.append(f"- Pairs applied: {len(out.applied)}")
+    search_errors = sum(1 for r in out.applied if r.search_status == "error")
+    search_ok = len(out.applied) - search_errors
+    lines.append(f"- Pairs evaluated: {len(out.applied)}")
+    lines.append(f"- Search OK: {search_ok}")
+    lines.append(f"- Search errors: {search_errors}")
     lines.append(f"- Pairs skipped: {len(out.skipped)}")
     lines.append(f"- Total notes changed: {out.total_notes_changed}")
-    if out.total_notes_changed == 0 and out.applied:
+    if search_errors:
+        lines.append("")
+        lines.append(
+            "One or more Anki searches failed. These are not counted as clean 0-match "
+            "results; see `search_status`, `matched_notes`, and `error_message` below."
+        )
+    elif out.total_notes_changed == 0 and out.applied:
         lines.append("")
         lines.append(
             "No notes were changed. This usually means none of the 'old' tags from your "
             "rules exist in this collection (or they were already renamed)."
         )
+
     # Show the exact tag search used for counts (helps debug "why so few?")
     if out.applied:
         lines.append("")
-        lines.append("### Tag queries")
-        lines.append("| old | query | matched_notes |")
-        lines.append("|---|---|---:|")
-        for old, _new, cnt, _mode in out.applied:
-            query = _build_tag_regex_query(old)
-            if scope_query:
-                query = f"{query} {scope_query}".strip()
-            lines.append(f"| `{old}` | `{query}` | {cnt} |")
+        lines.append("### Rule Search Status")
+        lines.append("| old | new | raw_regex | anki_query | search_status | search_error | matched_notes | error_message |")
+        lines.append("|---|---|---|---|---|---|---:|---|")
+        for r in out.applied:
+            matched = "not tested" if r.search_status == "error" else str(r.matched_notes or 0)
+            search_error = "true" if r.search_status == "error" else "false"
+            lines.append(
+                f"| `{_md_cell(r.old)}` | `{_md_cell(r.new)}` | `{_md_cell(r.raw_regex)}` | "
+                f"`{_md_cell(r.anki_query)}` | {r.search_status} | {search_error} | "
+                f"{matched} | {_md_cell(r.error_message or '')} |"
+            )
     if out.warnings:
         lines.append("")
         lines.append("### Warnings")
@@ -913,12 +1083,16 @@ def _write_report(
             lines.append(f"- {w}")
     lines.append("")
     if out.applied:
-        lines.append("### Applied")
-        lines.append("| old | new | notes_changed | mode |")
-        lines.append("|---|---|---:|---|")
-        for old, new, cnt, mode in out.applied:
+        lines.append("### Evaluated Rename Rules")
+        lines.append("| old | new | matched_notes | notes_changed | mode | search_status |")
+        lines.append("|---|---|---:|---:|---|---|")
+        for r in out.applied:
+            matched = "not tested" if r.search_status == "error" else str(r.matched_notes or 0)
             # Keep table compact; avoid huge files
-            lines.append(f"| `{old}` | `{new}` | {cnt} | {mode} |")
+            lines.append(
+                f"| `{_md_cell(r.old)}` | `{_md_cell(r.new)}` | {matched} | "
+                f"{r.notes_changed} | {r.mode} | {r.search_status} |"
+            )
     if out.skipped:
         lines.append("")
         lines.append("### Skipped")

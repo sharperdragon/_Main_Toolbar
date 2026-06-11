@@ -5,13 +5,32 @@ import json
 import re
 from typing import Dict, List, Sequence, Tuple, Set
 
-from .data import Pair, Preflight, Outcome, ExecResult, RegexRuleDebug
+from .data import Pair, Preflight, Outcome, RenameRuleResult, ExecResult, RegexRuleDebug
 
 _SANITIZE_CHILD_TAIL = re.compile(r"::\((?:\.\+\?|\.\*)\)\$$")
 _SANITIZE_REPL_TAIL  = re.compile(r"::(?:\\\d+|\$\d+)\s*$")
 
 # SAFE by default — replacements are never altered in prefix preflight
 DROP_TAILS_IN_PREFIX = False
+
+
+def escape_anki_tag_re(pattern: str) -> str:
+    """
+    Escape characters that confuse Anki's search parser inside tag:re queries.
+
+    Literal ':' characters in hierarchical tag names must be escaped for Anki's
+    outer search parser. Regex grouping/control syntax is otherwise preserved.
+    """
+    out: list[str] = []
+    for i, ch in enumerate(pattern or ""):
+        if ch != ":":
+            out.append(ch)
+            continue
+        if i > 0 and pattern[i - 1] in {"\\", "?"}:
+            out.append(ch)
+            continue
+        out.append(r"\:")
+    return "".join(out)
 
 
 
@@ -336,7 +355,7 @@ def inject_left_path_capture(pattern: str, prefix_pat: str = r"^(?:.*::)?") -> s
 
 def bump_replacement_groups(repl: str, bump: int = 1) -> str:
     """
-    Increase every $n by +bump, ignoring \$n (literal dollars).
+    Increase every $n by +bump, ignoring \\$n (literal dollars).
     Handles multi-digit indices ($10 -> $11) and $0 as well.
     """
     def _inc(m: re.Match) -> str:
@@ -367,7 +386,8 @@ def _looks_literal_segment(seg: str) -> bool:
 
 
 __all__ = [
-    "Pair", "Preflight", "Outcome", "RegexRuleDebug", "ExecResult",
+    "Pair", "Preflight", "Outcome", "RegexRuleDebug", "RenameRuleResult", "ExecResult",
+    "escape_anki_tag_re",
     "_discover_rule_files", "_load_pairs_from_csv", "_load_pairs_from_json",
     "_norm_tag", "_normalize_pairs", "_resolve_chains",
     "_rename_tag_token", "_sanitize_parent_only", "_compute_prefixes",

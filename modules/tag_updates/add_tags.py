@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from time import strftime
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import re
 
@@ -15,7 +15,21 @@ except Exception:  # pragma: no cover - fallback when Qt symbols are unavailable
     QProgressDialog = None
     Qt = None
 from anki.collection import Collection
-from anki.errors import SearchError
+
+try:
+    from .tag_rename_utils import escape_anki_tag_re
+except Exception:  # pragma: no cover - standalone import fallback
+    def escape_anki_tag_re(pattern: str) -> str:
+        out: list[str] = []
+        for i, ch in enumerate(pattern or ""):
+            if ch != ":":
+                out.append(ch)
+                continue
+            if i > 0 and pattern[i - 1] in {"\\", "?"}:
+                out.append(ch)
+                continue
+            out.append(r"\:")
+        return "".join(out)
 
 try:
     from ..module_config import (
@@ -103,9 +117,13 @@ class TagAddRule:
 @dataclass
 class RuleStats:
     rule: TagAddRule
-    notes_matched: int = 0
+    notes_matched: Optional[int] = None
     notes_changed: int = 0
     tags_added: int = 0
+    raw_regex: str = ""
+    anki_query: str = ""
+    search_status: Literal["ok", "error", "not_tested"] = "not_tested"
+    error_message: Optional[str] = None
 
 
 @dataclass
@@ -119,7 +137,7 @@ class RunStats:
 
     @property
     def total_notes_matched(self) -> int:
-        return sum(r.notes_matched for r in self.rules)
+        return sum(r.notes_matched or 0 for r in self.rules)
 
     @property
     def total_notes_changed(self) -> int:
@@ -128,6 +146,10 @@ class RunStats:
     @property
     def total_tags_added(self) -> int:
         return sum(r.tags_added for r in self.rules)
+
+    @property
+    def total_search_errors(self) -> int:
+        return sum(1 for r in self.rules if r.search_status == "error")
 
 
 # * JSON loading --------------------------------------------------------------
@@ -270,6 +292,15 @@ def _sanitize_search_query(q: str) -> str:
     return re.sub(r"(?<!\\)\\\^", "^", q)
 
 
+def _build_tag_re_query_from_pattern(pattern: str) -> str:
+    return f"tag:re:{escape_anki_tag_re(pattern)}"
+
+
+def _build_tag_path_query(tag_path: str) -> tuple[str, str]:
+    raw_regex = f"^{re.escape(tag_path)}(::|$)"
+    return raw_regex, _build_tag_re_query_from_pattern(raw_regex)
+
+
 def _ui_process_events() -> None:
     """Keep the UI responsive during long in-thread runs."""
     if QApplication is None:
@@ -401,23 +432,31 @@ def _apply_rules_to_collection(
         )
 
         if raw_query.startswith(known_prefixes):
-            query = raw_query
+            if raw_query.startswith("tag:re:"):
+                rule_stat.raw_regex = raw_query[len("tag:re:") :]
+                query = _build_tag_re_query_from_pattern(rule_stat.raw_regex)
+            else:
+                query = raw_query
         else:
             # Escape for use inside a regex, then anchor as a full tag path.
-            escaped = re.escape(raw_query)
-            query = f"tag:re:^{escaped}(::|$)"
+            rule_stat.raw_regex, query = _build_tag_path_query(raw_query)
 
         if scope_query:
             query = f"{query} {scope_query}".strip()
+        rule_stat.anki_query = query
 
         try:
             note_ids = col.find_notes(query)
-        except SearchError as e:
+        except Exception as e:
             # Log and skip this rule instead of crashing the whole Tag Updates run
             _log_search_error(rule, query, e)
+            rule_stat.search_status = "error"
+            rule_stat.error_message = str(e)
+            rule_stat.notes_matched = None
             stats.append(rule_stat)
             continue
 
+        rule_stat.search_status = "ok"
         rule_stat.notes_matched = len(note_ids)
         total_notes_seen += len(note_ids)
         _set_progress_state(
@@ -486,32 +525,37 @@ def _write_log(stats: RunStats, scope_query: str = "") -> Optional[Path]:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"tag_additions_{ts}.md"
 
+    def _md_cell(value: object) -> str:
+        return str(value if value is not None else "").replace("\n", "<br>").replace("|", "\\|")
+
     lines: List[str] = []
     lines.append(f"# Tag additions run — {ts}")
     lines.append("")
     lines.append(f"- dry_run: **{stats.dry_run}**")
     lines.append(f"- rules: **{stats.total_rules}**")
     lines.append(f"- notes matched: **{stats.total_notes_matched}**")
+    lines.append(f"- search errors: **{stats.total_search_errors}**")
     lines.append(f"- notes changed: **{stats.total_notes_changed}**")
     lines.append(f"- tags added: **{stats.total_tags_added}**")
     if scope_query:
         lines.append(f"- scope_query: `{scope_query}`")
     lines.append("")
     lines.append(
-        "| # | rule | query | add_tags | notes_matched | notes_changed | tags_added |"
+        "| # | rule | raw_query | add_tags | raw_regex | anki_query | search_status | search_error | matched_notes | notes_changed | tags_added | error_message |"
     )
     lines.append(
-        "|---|------|-------|----------|---------------|---------------|-----------|"
+        "|---|------|-----------|----------|-----------|------------|---------------|--------------|---------------|---------------|-----------|---------------|"
     )
 
     for idx, r in enumerate(stats.rules, start=1):
         add_tags = ", ".join(r.rule.add_tags)
-        # escape pipe characters in query or tags for Markdown table
-        q = r.rule.query.replace("|", "\\|")
-        at = add_tags.replace("|", "\\|")
+        matched = "not tested" if r.search_status == "error" else str(r.notes_matched or 0)
+        search_error = "true" if r.search_status == "error" else "false"
         lines.append(
-            f"| {idx} | {r.rule.name} | `{q}` | `{at}` | "
-            f"{r.notes_matched} | {r.notes_changed} | {r.tags_added} |"
+            f"| {idx} | {_md_cell(r.rule.name)} | `{_md_cell(r.rule.query)}` | "
+            f"`{_md_cell(add_tags)}` | `{_md_cell(r.raw_regex)}` | "
+            f"`{_md_cell(r.anki_query)}` | {r.search_status} | {search_error} | "
+            f"{matched} | {r.notes_changed} | {r.tags_added} | {_md_cell(r.error_message or '')} |"
         )
 
     text = "\n".join(lines)
@@ -625,6 +669,7 @@ def _run_tag_additions_core(
         "",
         f"Rules: {stats.total_rules}",
         f"Notes matched: {stats.total_notes_matched}",
+        f"Search errors: {stats.total_search_errors}",
         f"Notes changed: {stats.total_notes_changed}",
         f"Tags added: {stats.total_tags_added}",
     ]

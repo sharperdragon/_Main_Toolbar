@@ -469,6 +469,7 @@ def run_tag_updates() -> None:
             lines.append("Tag additions:")
             lines.append(f"  · Rules: {add_stats.total_rules}")
             lines.append(f"  · Notes matched: {add_stats.total_notes_matched}")
+            lines.append(f"  · Search errors: {add_stats.total_search_errors}")
             lines.append(f"  · Notes changed: {add_stats.total_notes_changed}")
             lines.append(f"  · Tags added: {add_stats.total_tags_added}")
         elif selected_add_rules:

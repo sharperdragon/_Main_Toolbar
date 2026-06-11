@@ -8,7 +8,14 @@ if TYPE_CHECKING:
     from .tag_rename_utils import SomeTypeOnlyHint
     from .ops import OpChanges  # only for type hints
 
-__all__ = ["Pair", "Preflight", "Outcome", "RegexRuleDebug", "ExecResult"]
+__all__ = [
+    "Pair",
+    "Preflight",
+    "Outcome",
+    "RegexRuleDebug",
+    "RenameRuleResult",
+    "ExecResult",
+]
 
 
 # =========================
@@ -36,9 +43,22 @@ class Preflight:
 
 
 @dataclass
+class RenameRuleResult:
+    old: str
+    new: str
+    raw_regex: str
+    anki_query: str
+    search_status: Literal["ok", "error"]
+    matched_notes: Optional[int]
+    notes_changed: int
+    mode: str
+    error_message: Optional[str] = None
+
+
+@dataclass
 class Outcome:
-    applied: List[Tuple[str, str, int, str]]  
-    skipped: List[Tuple[str, str, str]]       
+    applied: List[RenameRuleResult]
+    skipped: List[Tuple[str, str, str]]
     warnings: List[str]
     total_notes_changed: int
 

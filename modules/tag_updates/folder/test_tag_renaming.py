@@ -30,13 +30,16 @@ EXAMPLES = [
 # * Toggle to simulate sanitizer behavior for the prefixes preflight
 PREVIEW_DROP_TAILS_IN_PREFIX = False  # SAFE default; set True to test tail-trim
 
+
 def load_rules_json(path: str) -> list[tuple[str, str]]:
     """
     Load JSON rules and normalize $1 → \1 like the module does.
     Returns a list of (pattern, replacement) tuples.
     """
-    import json, re
+    import json
+    import re
     from pathlib import Path
+
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     pairs: list[tuple[str, str]] = []
     for item in data:
@@ -50,12 +53,14 @@ def load_rules_json(path: str) -> list[tuple[str, str]]:
             pairs.append((patt, repl))
     return pairs
 
+
 def preview_prefix_pass(UT, rules: list[tuple[str, str]], inputs: list[str], drop_tails: bool) -> list[str]:
     """
     For each (pattern, replacement), show original vs. sanitized prefix forms and
     example substitutions for any inputs that fully match the sanitized pattern.
     """
     import re
+
     rows: list[str] = []
 
     # temporarily override the module flag if present
@@ -94,9 +99,11 @@ def preview_prefix_pass(UT, rules: list[tuple[str, str]], inputs: list[str], dro
 
     return rows
 
+
 def quick_sanity(UT, rules: list[tuple[str, str]], tags: list[str]) -> list[str]:
     """Show the first matching rule result per tag using the prefix-sanitized pattern."""
     import re
+
     out: list[str] = ["== Quick Sanity =="]
     for t in tags:
         shown = False
@@ -119,28 +126,34 @@ def quick_sanity(UT, rules: list[tuple[str, str]], tags: list[str]) -> list[str]
     out.append("")
     return out
 
+
 def main() -> None:
     lines = []
     try:
         # ? Ensure the Anki add-ons root is on sys.path
         import sys
+
         if ADDONS_PATH not in sys.path:
             sys.path.insert(0, ADDONS_PATH)
 
         import importlib
+
         mod = importlib.import_module(PKG)
         lines.append(f"OK: Imported {PKG}")
         lines.append(f"Module file: {getattr(mod, '__file__', 'n/a')}")
 
         # --- Logic preview ---
         import importlib as _importlib
+
         TR = _importlib.import_module(f"{PKG}.TR_main")
         UT = _importlib.import_module(f"{PKG}.tag_renaming.tag_rename_utils")
 
         try:
             rules = load_rules_json(RULES_PATH)
             lines.append(f"Loaded rules: {len(rules)} from {RULES_PATH}")
-            lines.append(f"DROP_TAILS_IN_PREFIX (module default): {getattr(UT, 'DROP_TAILS_IN_PREFIX', None)}")
+            lines.append(
+                f"DROP_TAILS_IN_PREFIX (module default): {getattr(UT, 'DROP_TAILS_IN_PREFIX', None)}"
+            )
             lines.append(f"Preview flag (this test run): {PREVIEW_DROP_TAILS_IN_PREFIX}")
             lines.append("")
 
@@ -152,18 +165,21 @@ def main() -> None:
             lines.extend(preview_prefix_pass(UT, rules, EXAMPLES, PREVIEW_DROP_TAILS_IN_PREFIX))
         except Exception:
             import traceback
+
             lines.append("! FAILED during logic preview")
             lines.append("---- TRACEBACK ----")
             lines.append("".join(traceback.format_exc()))
 
     except Exception as e:
         import traceback
+
         lines.append(f"! FAILED to import {PKG}")
         lines.append("---- TRACEBACK ----")
         lines.append("".join(traceback.format_exc()))
 
     log = Path(DESKTOP) / f"tag_renaming_import_check_{datetime.now().strftime(TS_FORMAT)}.txt"
     log.write_text("\n".join(lines), encoding="utf-8")
+
 
 if __name__ == "__main__":
     main()
