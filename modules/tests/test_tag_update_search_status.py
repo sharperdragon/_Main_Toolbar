@@ -83,16 +83,47 @@ class FakeNote:
             self.tags.append(tag)
 
 
+class FakeTags:
+    def __init__(self) -> None:
+        self.rename_calls: list[tuple[str, str]] = []
+
+    def rename(self, old: str, new: str) -> None:
+        self.rename_calls.append((old, new))
+
+    def clear_unused_tags(self) -> None:
+        pass
+
+
+class FakeDb:
+    def __init__(self, rows: list[tuple[int, str]]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def all(self, query: str, *args: object) -> list[tuple[int, str]]:
+        self.calls.append((query, args))
+        return list(self.rows)
+
+
 class FakeCollection:
     def __init__(
         self,
         note_ids: list[int] | None = None,
         error: Exception | None = None,
+        note_tags_by_id: dict[int, list[str]] | None = None,
+        db: FakeDb | None = None,
     ) -> None:
         self.note_ids = note_ids or []
         self.error = error
         self.queries: list[str] = []
-        self.notes = {nid: FakeNote([]) for nid in self.note_ids}
+        note_ids_for_notes = set(self.note_ids)
+        note_ids_for_notes.update((note_tags_by_id or {}).keys())
+        self.notes = {
+            nid: FakeNote((note_tags_by_id or {}).get(nid, []))
+            for nid in note_ids_for_notes
+        }
+        self.updated_notes: list[int] = []
+        self.tags = FakeTags()
+        self.db = db
 
     def find_notes(self, query: str) -> list[int]:
         self.queries.append(query)
@@ -102,6 +133,12 @@ class FakeCollection:
 
     def get_note(self, nid: int) -> FakeNote:
         return self.notes[nid]
+
+    def update_note(self, note: FakeNote) -> None:
+        for nid, candidate in self.notes.items():
+            if candidate is note:
+                self.updated_notes.append(nid)
+                return
 
 
 class TagUpdateSearchStatusTests(unittest.TestCase):
@@ -229,6 +266,77 @@ class TagUpdateSearchStatusTests(unittest.TestCase):
         self.assertEqual(result.search_status, "ok")
         self.assertEqual(result.matched_notes, 0)
         self.assertIsNone(result.error_message)
+
+    def test_step1_broad_parent_rename_is_phase_one(self) -> None:
+        pair = self.data.Pair(
+            old="#AK_Step1_v12",
+            new="#Zank::Step1_v12",
+        )
+
+        self.assertEqual(self.tr_main._rename_phase(pair), 10)
+
+    def test_live_rename_uses_per_note_fallback_by_default(self) -> None:
+        old = "#AK_Other::Card_Features::Histology"
+        new = "#Zank::#Useful::Histology"
+        pair = self.data.Pair(old=old, new=new)
+        col = FakeCollection(
+            note_ids=[1],
+            note_tags_by_id={
+                1: [
+                    old,
+                    f"{old}::Subtag",
+                    "Unrelated",
+                ],
+            },
+        )
+
+        outcome = self.tr_main._execute(col, [pair], dry_run=False)
+
+        self.assertEqual(outcome.total_notes_changed, 1)
+        self.assertEqual(outcome.applied[0].mode, "fallback")
+        self.assertEqual(col.tags.rename_calls, [])
+        self.assertEqual(
+            col.notes[1].tags,
+            [
+                new,
+                f"{new}::Subtag",
+                "Unrelated",
+            ],
+        )
+        self.assertEqual(col.updated_notes, [1])
+
+    def test_live_rename_uses_note_table_when_browser_search_finds_nothing(self) -> None:
+        old = "#AK_Step1_v12"
+        new = "#Zank::Step1_v12"
+        pair = self.data.Pair(old=old, new=new)
+        db = FakeDb(
+            rows=[
+                (1, f" {old} "),
+                (2, f" {old}::#B&B::01_Anatomy "),
+                (3, " Unrelated "),
+                (4, f" {old.lower()} "),
+            ]
+        )
+        col = FakeCollection(
+            note_ids=[],
+            db=db,
+            note_tags_by_id={
+                1: [old],
+                2: [f"{old}::#B&B::01_Anatomy", "Unrelated"],
+                4: [old.lower()],
+            },
+        )
+
+        outcome = self.tr_main._execute(col, [pair], dry_run=False)
+
+        self.assertEqual(col.queries, [])
+        self.assertEqual(outcome.total_notes_changed, 2)
+        self.assertEqual(outcome.applied[0].matched_notes, 2)
+        self.assertEqual(col.notes[1].tags, [new])
+        self.assertEqual(col.notes[2].tags, [f"{new}::#B&B::01_Anatomy", "Unrelated"])
+        self.assertEqual(col.notes[4].tags, [old.lower()])
+        self.assertEqual(col.updated_notes, [1, 2])
+        self.assertEqual(db.calls[0][1], (r"% #AK\_Step1\_v12 %", r"% #AK\_Step1\_v12::%"))
 
 
 if __name__ == "__main__":

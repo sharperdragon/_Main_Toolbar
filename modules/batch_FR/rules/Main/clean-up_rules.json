@@ -36,11 +36,11 @@
     "delete_chars": {"max_chars": 0, "count_spaces": true}
 },
 {
-    "pattern": "(\band\b)\\s+/\\s+(\bor\b)",
+    "pattern": "(\\band\\b)\\s+/\\s+(\\bor\\b)",
     "replacement": "$1/$2",
     "regex": true,
     "fields": [
-    "All"
+    "ALL"
     ],
     "delete_chars": {"max_chars": 1, "count_spaces": false}
 }

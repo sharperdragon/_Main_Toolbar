@@ -26,6 +26,7 @@ from .tag_rename_utils import (
 
 
 _BACKREF_RE = re.compile(r"\\([1-9])")
+LIKE_ESCAPE_CHAR = "\\"
 
 # Display-only: placeholder shown when a backreference (e.g. "\\1") exists but the capture group
 # is not safely previewable (e.g. the group is something like ".*" or contains regex operators).
@@ -93,7 +94,10 @@ except Exception:
 
 
 #
-#* Fallback performance knobs (used only when the fast path is unavailable)
+# * Live rename behavior
+USE_FAST_TAG_RENAME: bool = False
+
+#* Fallback performance knobs
 BATCH_COMMIT_SIZE: int = 1000
 MAX_EXPANSIONS_PER_RULE: int = 500
 PREVIEW_EXAMPLES: int = 10
@@ -125,7 +129,7 @@ def _rename_phase(p: Pair) -> int:
     new = _norm_tag(getattr(p, "new", ""))
 
     broad_parent_renames = {
-        "#AK_Step1_v12": "#Zank__Step1_v12",
+        "#AK_Step1_v12": "#Zank::Step1_v12",
         "#AK_Step2_v12": "#Zank::#Step2_v12",
         "#AK_Step3_v12": "#Zank::Step3_v12",
         "#AK_Other": "#Zank::Other",
@@ -785,6 +789,107 @@ def _build_tag_regex_query(tag: str) -> str:
     return f"tag:re:{escape_anki_tag_re(_tag_regex_pattern_for_tag(tag))}"
 
 
+def _escape_like_literal(value: str, escape_char: str = LIKE_ESCAPE_CHAR) -> str:
+    escaped = value.replace(escape_char, escape_char * 2)
+    escaped = escaped.replace("%", f"{escape_char}%")
+    escaped = escaped.replace("_", f"{escape_char}_")
+    return escaped
+
+
+def _tag_field_has_prefix(tags_field: object, tag: str) -> bool:
+    prefix = f"{tag}::"
+    return any(token == tag or token.startswith(prefix) for token in str(tags_field or "").split())
+
+
+def _dedupe_note_ids(note_ids: Iterable[object]) -> List[int]:
+    seen: Set[int] = set()
+    out: List[int] = []
+    for nid in note_ids:
+        try:
+            nid_int = int(nid)
+        except Exception:
+            continue
+        if nid_int in seen:
+            continue
+        seen.add(nid_int)
+        out.append(nid_int)
+    return out
+
+
+def _find_note_ids_by_tag_prefix_db(col, tag: str) -> List[int] | None:
+    """
+    Find notes whose stored tag tokens are exactly `tag` or descendants of it.
+
+    Browser `tag:re:` search can disagree with `col.tags.all()` for hierarchical
+    tags and punctuation-heavy tag names. The notes table is the source of truth
+    for the per-note fallback editor, so prefer it when available.
+    """
+    db = getattr(col, "db", None)
+    if db is None:
+        return None
+
+    escaped_tag = _escape_like_literal(tag)
+    exact_pat = f"% {escaped_tag} %"
+    child_pat = f"% {escaped_tag}::%"
+
+    db_all = getattr(db, "all", None)
+    if callable(db_all):
+        rows = db_all(
+            "SELECT id, tags FROM notes WHERE tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\'",
+            exact_pat,
+            child_pat,
+        )
+        matched_ids: List[object] = []
+        for row in rows:
+            try:
+                nid, tags_field = row[0], row[1]
+            except Exception:
+                continue
+            if _tag_field_has_prefix(tags_field, tag):
+                matched_ids.append(nid)
+        return _dedupe_note_ids(matched_ids)
+
+    db_list = getattr(db, "list", None)
+    if callable(db_list):
+        nids = db_list(
+            "SELECT id FROM notes WHERE tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\'",
+            exact_pat,
+            child_pat,
+        )
+        filtered: List[int] = []
+        for nid in _dedupe_note_ids(nids):
+            try:
+                note = col.get_note(nid)
+            except Exception:
+                continue
+            if any(t == tag or t.startswith(f"{tag}::") for t in list(getattr(note, "tags", []))):
+                filtered.append(nid)
+        return filtered
+
+    return None
+
+
+def _find_note_ids_for_tag_prefix(
+    col,
+    tag: str,
+    *,
+    fallback_query: str,
+    scope_query: str = "",
+) -> List[int]:
+    db_note_ids = _find_note_ids_by_tag_prefix_db(col, tag)
+    if db_note_ids is None:
+        query = fallback_query
+        if scope_query:
+            query = f"{query} {scope_query}".strip()
+        return _dedupe_note_ids(col.find_notes(query))
+
+    if not scope_query:
+        return db_note_ids
+
+    scoped_ids = set(_dedupe_note_ids(col.find_notes(scope_query)))
+    return [nid for nid in db_note_ids if nid in scoped_ids]
+
+
 def _search_result(
     p: Pair,
     *,
@@ -826,17 +931,23 @@ def _execute(
             # Estimate impacted notes cheaply
             raw_regex = _tag_regex_pattern_for_tag(p.old)
             query = _build_tag_regex_query(p.old)
+            report_query = query
             if scope_query_norm:
-                query = f"{query} {scope_query_norm}".strip()
+                report_query = f"{query} {scope_query_norm}".strip()
             try:
-                count = len(col.find_notes(query))
+                count = len(_find_note_ids_for_tag_prefix(
+                    col,
+                    p.old,
+                    fallback_query=query,
+                    scope_query=scope_query_norm,
+                ))
             except Exception as e:
                 err = str(e)
                 warnings.append(f'dry-run search failed for "{p.old}"→"{p.new}": {err}')
                 applied.append(_search_result(
                     p,
                     raw_regex=raw_regex,
-                    anki_query=query,
+                    anki_query=report_query,
                     search_status="error",
                     matched_notes=None,
                     notes_changed=0,
@@ -847,7 +958,7 @@ def _execute(
             applied.append(_search_result(
                 p,
                 raw_regex=raw_regex,
-                anki_query=query,
+                anki_query=report_query,
                 search_status="ok",
                 matched_notes=count,
                 notes_changed=0,
@@ -857,25 +968,31 @@ def _execute(
 
     # Try fast, global rename via TagManager if available; otherwise fallback.
     def has_fast() -> bool:
-        return hasattr(col.tags, "rename")
+        return USE_FAST_TAG_RENAME and hasattr(col.tags, "rename")
 
     for p in pairs:
         notes_changed = 0
         fast_used = False
         raw_regex = _tag_regex_pattern_for_tag(p.old)
         query = _build_tag_regex_query(p.old)
+        report_query = query
         if scope_query_norm:
-            query = f"{query} {scope_query_norm}".strip()
+            report_query = f"{query} {scope_query_norm}".strip()
 
         try:
-            nids = col.find_notes(query)
+            nids = _find_note_ids_for_tag_prefix(
+                col,
+                p.old,
+                fallback_query=query,
+                scope_query=scope_query_norm,
+            )
         except Exception as e:
             err = str(e)
             warnings.append(f'search failed for "{p.old}"→"{p.new}": {err}')
             applied.append(_search_result(
                 p,
                 raw_regex=raw_regex,
-                anki_query=query,
+                anki_query=report_query,
                 search_status="error",
                 matched_notes=None,
                 notes_changed=0,
@@ -890,7 +1007,7 @@ def _execute(
             applied.append(_search_result(
                 p,
                 raw_regex=raw_regex,
-                anki_query=query,
+                anki_query=report_query,
                 search_status="ok",
                 matched_notes=0,
                 notes_changed=0,
@@ -915,7 +1032,7 @@ def _execute(
             applied.append(_search_result(
                 p,
                 raw_regex=raw_regex,
-                anki_query=query,
+                anki_query=report_query,
                 search_status="ok",
                 matched_notes=matched_count,
                 notes_changed=notes_changed,
@@ -945,7 +1062,7 @@ def _execute(
         applied.append(_search_result(
             p,
             raw_regex=raw_regex,
-            anki_query=query,
+            anki_query=report_query,
             search_status="ok",
             matched_notes=matched_count,
             notes_changed=notes_changed,
