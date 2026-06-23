@@ -14,8 +14,22 @@
         "delete_chars": {"max_chars": 0, "count_spaces": true}
     },
     {
+        "pattern": "(\\{\\{[^\\}]*?)<b>([^\\}]*?\\}\\})",
+        "replacement": "$1$2",
+        "loop": true,
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 3, "count_spaces": true}
+    },
+    {
         "pattern": "<b>(\\{\\{[^\\}]+?\\}\\}\\s+)",
         "replacement": "$1<b>",
+        "loop": true,
+        "fields": ["Text"],
+        "delete_chars": {"max_chars": 0, "count_spaces": true}
+    },
+    {
+        "pattern": "(\\{\\{[^\\}]+?\\}\\}(?:,|;|:)*)</b>",
+        "replacement": "</b>$1",
         "loop": true,
         "fields": ["Text"],
         "delete_chars": {"max_chars": 0, "count_spaces": true}
